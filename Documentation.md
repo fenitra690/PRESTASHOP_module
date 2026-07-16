@@ -279,3 +279,128 @@ onMounted(async () => {
   border-radius: 8px;
 }
 </style>
+
+
+#8 delete (effacer)
+<script setup>
+const supprimerProduit = async (id) => {
+  // 1. Appel API
+  const succes = await api.delete('products', id);
+  
+  if (succes) {
+    // 2. Mise à jour locale (pour que la ligne disparaisse de l'écran)
+    produits.value = produits.value.filter(p => p.id !== id);
+    alert("Produit supprimé !");
+  }
+}
+
+#9 post (Ajouter)
+async function ajouterUnClient() {
+  const nouveauClient = {
+    firstname: "Jean",
+    lastname: "Dupont",
+    email: "jean.dupont@email.com",
+    passwd: "motdepasse1234",
+    active: 1
+  }
+
+  // On utilise .post() car c'est une création
+  await api.post('customers', nouveauClient)
+}
+
+#10 put (modifier)
+// Écriture classique et directe
+async function modifierPrix(idDuProduit, nouveauPrix) {
+  
+  const reponse = await api.put('products', idDuProduit, { price: nouveauPrix })
+
+  if (reponse != null) {
+    alert("Prix mis à jour avec succès !")
+  }
+}
+//exemple
+<button @click="modifierPrix(4, 25.00)">Mettre le produit n°4 à 25€</button>
+
+utils->
+  api.js
+  db.js
+App.vue
+views->
+    HomeView.vue
+    frontoffice->
+      Authentification.vue
+      ListProduct.vue
+      PanierList.vue
+      Payment.vue
+
+</script>
+
+#11 ref simple pour input usage
+<script setup>
+
+<template>  
+import api from '@/utils/api.js'
+import { ref } from 'vue'
+
+// On crée des boîtes vides au départ
+const nomSaisi = ref('')
+const prixSaisi = ref(0)
+
+<template>
+  <div class="mon-formulaire">
+    <h3>Ajouter un nouveau produit</h3>
+
+    <label>Nom du produit :</label>
+    <input type="text" v-model="nomSaisi" placeholder="Ex: Super carnet" />
+
+    <label>Prix (€) :</label>
+    <input type="number" v-model="prixSaisi" placeholder="Ex: 15.99" />
+
+    <button @click="ajouterMonProduitReel()">Créer le produit sur PrestaShop</button>
+  </div>
+</template>
+
+// Fonction classique à l'ancienne
+async function ajouterMonProduitReel() {
+  
+  // 1. On vérifie que l'utilisateur n'a pas laissé le champ vide
+  if (nomSaisi.value.trim() == "") {
+    alert("Hé oh ! Tu as oublié de donner un nom au produit.")
+    return
+  }
+
+  // 2. On fabrique l'objet PLAT demandé par le script de ton pote
+  // On va chercher ce qu'il y a à l'intérieur des inputs avec .value
+  const donneesFormulaire = {
+    active: 1,
+    name: nomSaisi.value,             // <--- Prends la valeur de l'input Nom
+    price: parseFloat(prixSaisi.value), // <--- Prends la valeur de l'input Prix
+    id_category_default: 2, 
+    link_rewrite: "produit-depuis-formulaire"
+  }
+
+  // 3. On envoie l'objet à l'API (le script de ton pote s'occupe du XML)
+  const reponse = await api.post('products', donneesFormulaire)
+
+  // 4. Si ça a marché
+  if (reponse != null) {
+    alert("Nickel ! Le produit a été créé dans le vrai PrestaShop.")
+    
+    // Optionnel : On vide le formulaire pour le prochain coup
+    nomSaisi.value = ""
+    prixSaisi.value = 0
+  } else {
+    alert("Mince, le serveur PrestaShop a renvoyé une erreur.")
+  }
+}
+</script>
+
+#12 json manivel
+// Pour voir tous les champs possibles d'un produit
+const structure = await api.get('products?schema=blank')
+console.log(structure)
+
+ou
+
+// Le "null, 2" force un affichage espacé et super lisible dans les logs
+console.log(JSON.stringify(laReponseDeLapi, null, 2))

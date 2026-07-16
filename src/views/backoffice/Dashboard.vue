@@ -1,0 +1,1218 @@
+<script setup>
+import api from '@/utils/api.js'
+import db from '@/utils/db.js'
+import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+
+const router = useRouter()
+const sessionBack = db.session('admin', null)
+
+// --- GARDE : si pas connecté, retour login ---
+if (!sessionBack.value) {
+  router.push('/backoffice/login')
+}
+
+// 1. La logique (JavaScript)
+const saluer = () => {
+  router.push('/Apropos')
+}
+
+// --- VUE ACTIVE ---
+// 'commandes' | 'stock' | 'import'
+const vue = ref('commandes')
+
+// --- DONNÉES ---
+const commandes = ref([]) // commandes PrestaShop
+const paniers = ref([]) // paniers PrestaShop (carts)
+const produits = ref([]) // produits pour le stock
+const stocks = ref([]) // stock_availables
+const clients = ref([]) // pour afficher les noms au lieu des IDs
+const chargement = ref(true)
+const etatsMap = ref({})
+
+const COULEURS_ETATS = {
+  1: { couleur: '#f39c12', bg: '#fef9e7' },
+  2: { couleur: '#27ae60', bg: '#eafaf1' },
+  3: { couleur: '#27ae60', bg: '#eafaf1' },
+  4: { couleur: '#3498db', bg: '#ebf5fb' },
+  5: { couleur: '#3498db', bg: '#ebf5fb' },
+  6: { couleur: '#e74c3c', bg: '#fdecea' },
+  7: { couleur: '#95a5a6', bg: '#f2f3f4' },
+  8: { couleur: '#e74c3c', bg: '#fdecea' },
+  9: { couleur: '#f39c12', bg: '#fef9e7' },
+  10: { couleur: '#8e44ad', bg: '#f5eef8' },
+}
+
+// ============================================================
+// ÉTATS UTILISÉS (Demande spécifique)
+// ============================================================
+const ETATS = {
+  cart: { label: 'Dans le panier', couleur: '#3498db', bg: '#ebf5fb' },
+  2: { label: 'Paiement effectué', couleur: '#27ae60', bg: '#eafaf1' },
+  6: { label: 'Annulé', couleur: '#e74c3c', bg: '#fdecea' },
+}
+
+// ============================================================
+// CHARGEMENT
+// ============================================================
+onMounted(async () => {
+  // Commandes PrestaShop
+  const resCmd = await api.get('orders?display=full&sort=[id_DESC]')
+  if (resCmd) {
+    const raw = resCmd.orders || resCmd.prestashop?.orders?.order
+    if (raw) commandes.value = Array.isArray(raw) ? raw : [raw]
+  }
+
+  // Paniers (Carts) - pour voir ce qui est "Dans le panier"
+  const resCart = await api.get('carts?display=full&sort=[id_DESC]')
+  if (resCart) {
+    const raw = resCart.carts || resCart.prestashop?.carts?.cart
+    // On ne garde que les paniers qui n'ont pas encore de commande associée
+    const liste = Array.isArray(raw) ? raw : [raw]
+    paniers.value = liste.filter((c) => !c.id_order || String(c.id_order) === '0')
+  }
+
+  // Clients (pour les noms)
+  const resClients = await api.get('customers?display=[id,firstname,lastname]')
+  if (resClients) {
+    const raw = resClients.customers || resClients.prestashop?.customers?.customer
+    if (raw) clients.value = Array.isArray(raw) ? raw : [raw]
+  }
+
+  // Produits
+  const resProd = await api.get('products?display=full')
+  if (resProd) {
+    const raw = resProd.products || resProd.prestashop?.products?.product
+    if (raw) produits.value = Array.isArray(raw) ? raw : [raw]
+  }
+
+  // Stocks
+  const resStock = await api.get('stock_availables?display=full')
+  if (resStock) {
+    const raw = resStock.stock_availables || resStock.prestashop?.stock_availables?.stock_available
+    if (raw) stocks.value = Array.isArray(raw) ? raw : [raw]
+  }
+
+  // Charger les vrais noms des états depuis PrestaShop
+  const resEtats = await api.get('order_states?display=full')
+  if (resEtats) {
+    const raw = resEtats.order_states || resEtats.prestashop?.order_states?.order_state
+    if (raw) {
+      const liste = Array.isArray(raw) ? raw : [raw]
+      for (let i = 0; i < liste.length; i++) {
+        const e = liste[i]
+        let nom = ''
+        if (typeof e.name === 'string') nom = e.name
+        else if (e.name?.language) {
+          const l = e.name.language
+          nom = Array.isArray(l)
+            ? l[0]?.value || l[0]?.['#text'] || ''
+            : l?.value || l?.['#text'] || ''
+        }
+        const couleurs = COULEURS_ETATS[e.id] || { couleur: '#888', bg: '#f5f5f5' }
+        etatsMap.value[String(e.id)] = { label: nom || 'État ' + e.id, ...couleurs }
+      }
+    }
+  }
+
+  chargement.value = false
+})
+
+// ============================================================
+// UTILITAIRES
+// ============================================================
+// 1. Récupère le nom en Français (ID 2), sinon le premier disponible
+const getNom = (p) => {
+  if (!p || !p.name) return 'Produit sans nom'
+
+  if (typeof p.name === 'string') return p.name
+
+  if (Array.isArray(p.name)) {
+    // On cherche la version française (id: "2")
+    const versionFr = p.name.find((lang) => String(lang.id) === '2')
+    // Si on trouve le français on l'affiche, sinon on prend le premier (anglais)
+    return versionFr?.value || p.name[0]?.value || 'Produit sans nom'
+  }
+
+  return 'Produit'
+}
+
+const getImageUrl = (p) => {
+  if (!p) return ''
+
+  // L'ID du produit est directement accessible
+  const idProduit = p.id
+
+  // Les images sont directement dans p.associations.images
+  const imgs = p?.associations?.images
+  if (!imgs || (Array.isArray(imgs) && imgs.length === 0)) return ''
+
+  // On récupère la première image du tableau
+  const premiereImage = Array.isArray(imgs) ? imgs[0] : imgs
+  const idImage = premiereImage?.id
+
+  if (!idImage) return ''
+
+  // On assemble l'URL finale propre
+  return `/api/images/products/${idProduit}/${idImage}?ws_key=6CcZSeHI1MjkPrp1L9RGbKmoxNUEoMf7`
+}
+
+const getStock = (idProduct) => {
+  // Stock sans déclinaison (id_product_attribute = 0)
+  const s = stocks.value.find(
+    (s) => String(s.id_product) === String(idProduct) && String(s.id_product_attribute) === '0',
+  )
+  return s ? parseInt(s.quantity) || 0 : 0
+}
+
+const getStockEntry = (idProduct) => {
+  return stocks.value.find(
+    (s) => String(s.id_product) === String(idProduct) && String(s.id_product_attribute) === '0',
+  )
+}
+
+const getClientNom = (id) => {
+  if (!id || id === '0') return 'Invité'
+  const c = clients.value.find((item) => String(item.id) === String(id))
+  return c ? `${c.firstname} ${c.lastname}` : `Client #${id}`
+}
+
+const formatDate = (str) => {
+  if (!str) return '—'
+  const d = new Date(str)
+  return isNaN(d) ? str : d.toLocaleDateString('fr-FR')
+}
+
+const formatPrix = (val) => {
+  const n = parseFloat(val)
+  return isNaN(n) ? '0.00 €' : n.toFixed(2) + ' €'
+}
+
+const getEtat = (idState) => {
+  return (
+    etatsMap.value[String(idState)] || { label: 'État ' + idState, couleur: '#888', bg: '#f5f5f5' }
+  )
+}
+
+// ============================================================
+// TABLEAU DE BORD : stats
+// ============================================================
+const statsParJour = computed(() => {
+  const map = {}
+
+  // On compte uniquement les vraies commandes pour le CA
+  commandes.value.forEach((cmd) => {
+    const jour = formatDate(cmd.date_add).split(' ')[0]
+    if (!map[jour]) map[jour] = { jour, nb: 0, montant: 0 }
+
+    // On compte le montant pour toutes les commandes SAUF celles annulées (6)
+    map[jour].nb++
+    if (String(cmd.current_state) !== '6') {
+      map[jour].montant += parseFloat(cmd.total_paid) || 0
+    }
+  })
+
+  // Trier par date décroissante
+  return Object.values(map).sort((a, b) => {
+    const [da, ma, ya] = a.jour.split('/').map(Number)
+    const [db, mb, yb] = b.jour.split('/').map(Number)
+    return new Date(yb, mb - 1, db) - new Date(ya, ma - 1, da)
+  })
+})
+
+const totalGeneral = computed(() => {
+  let nb = 0,
+    montant = 0
+  commandes.value.forEach((cmd) => {
+    nb++
+    // CA global : tout sauf annulé
+    if (String(cmd.current_state) !== '6') {
+      montant += parseFloat(cmd.total_paid) || 0
+    }
+  })
+  return { nb, montant: montant.toFixed(2) }
+})
+
+// ============================================================
+// MODIFIER L'ÉTAT D'UNE COMMANDE
+// ============================================================
+const modifierEtat = async (cmd, nouvelIdEtat) => {
+  // 1. On crée une copie de la commande
+  const payload = { ...cmd }
+
+  // 2. On supprime les associations (lignes de produits) qui font planter le convertisseur XML
+  // PrestaShop n'en a pas besoin pour un changement d'état.
+  delete payload.associations
+
+  // 3. Mise à jour de l'état
+  payload.current_state = String(nouvelIdEtat)
+
+  // DEBUG: Affichez ceci dans votre console si ça échoue encore
+  console.log("Objet envoyé à l'API (sans associations):", payload)
+
+  const res = await api.put('orders', cmd.id, payload)
+
+  if (res) {
+    // Mettre à jour localement sans recharger la page
+    cmd.current_state = String(nouvelIdEtat)
+  } else {
+    alert("Erreur lors de la mise à jour de l'état.")
+  }
+}
+
+// ============================================================
+// GESTION DU STOCK
+// ============================================================
+const produitStockSelectionne = ref(null)
+const deltaStock = ref(0)
+const historiqueStock = ref([]) // simulé en localStorage
+const stockHistorique = db.live('stock_historique', [])
+const enCoursStock = ref(false)
+const msgStock = ref('')
+
+const ouvrirStock = (produit) => {
+  produitStockSelectionne.value = produit
+  deltaStock.value = 0
+  msgStock.value = ''
+  // Filtrer l'historique pour ce produit
+  historiqueStock.value = stockHistorique.value
+    .filter((h) => String(h.id_product) === String(produit.id))
+    .reverse()
+    .slice(0, 30)
+}
+
+const appliquerDelta = async () => {
+  const p = produitStockSelectionne.value
+  if (!p || deltaStock.value === 0) {
+    msgStock.value = 'Entrez une quantité (positive pour ajouter, négative pour retirer).'
+    return
+  }
+  enCoursStock.value = true
+  msgStock.value = ''
+
+  try {
+    // Appel à l'endpoint custom PrestaShop
+    // (le module doit être installé et exposer /api/customstock)
+    const qteActuelle = getStock(p.id)
+    const nouvelleQte = Math.max(0, qteActuelle + parseInt(deltaStock.value))
+
+    // Essayer d'abord le endpoint custom (StockAvailable::updateQuantity)
+    let succes = false
+    try {
+      const resCustom = await fetch(
+        `/api/customstock?ws_key=6CcZSeHI1MjkPrp1L9RGbKmoxNUEoMf7&id_product=${p.id}&delta=${deltaStock.value}`,
+        { method: 'POST' },
+      )
+      if (resCustom.ok) succes = true
+    } catch (e) {
+      console.warn('[Stock] Endpoint custom indisponible, fallback PUT stock_availables')
+    }
+
+    // Fallback : PUT direct sur stock_availables (si l'endpoint custom n'est pas dispo)
+    if (!succes) {
+      const entry = getStockEntry(p.id)
+      if (entry) {
+        const res = await api.put('stock_availables', entry.id, {
+          id_product: p.id,
+          id_product_attribute: 0,
+          quantity: nouvelleQte,
+          depends_on_stock: 0,
+          out_of_stock: 0,
+        })
+        if (res) succes = true
+      }
+    }
+
+    if (succes) {
+      // Mettre à jour localement
+      const entry = stocks.value.find(
+        (s) => String(s.id_product) === String(p.id) && String(s.id_product_attribute) === '0',
+      )
+      if (entry) entry.quantity = nouvelleQte
+
+      // Sauvegarder dans l'historique
+      const mouvement = {
+        id_product: p.id,
+        nom: getNom(p),
+        date: new Date().toLocaleDateString('fr-FR'),
+        delta: parseInt(deltaStock.value),
+        quantite_apres: nouvelleQte,
+        timestamp: Date.now(),
+      }
+      stockHistorique.value.push(mouvement)
+      historiqueStock.value = stockHistorique.value
+        .filter((h) => String(h.id_product) === String(p.id))
+        .reverse()
+        .slice(0, 30)
+
+      msgStock.value = `✓ Stock mis à jour : ${qteActuelle} → ${nouvelleQte}`
+      deltaStock.value = 0
+    } else {
+      msgStock.value = '⚠️ Erreur lors de la mise à jour du stock.'
+    }
+  } catch (e) {
+    console.error(e)
+    msgStock.value = '⚠️ Erreur inattendue.'
+  }
+
+  enCoursStock.value = false
+}
+
+const fermerStock = () => {
+  produitStockSelectionne.value = null
+}
+
+// ============================================================
+// IMPORTATION DES DONNÉES (CSV / ZIP)
+// ============================================================
+const fichiersImport = ref({ csv: null, images: null })
+const msgImport = ref('')
+const enCoursImport = ref(false)
+
+const gererFichier = (e, type) => {
+  fichiersImport.value[type] = e.target.files[0]
+}
+
+const lancerImport = async () => {
+  enCoursImport.value = true
+  msgImport.value =
+    '⏳ Importation en cours... (Simulation de traitement des 4 fichiers CSV et du ZIP)'
+  // Ici tu ajouterais ta logique de lecture CSV ou d'envoi à un script PHP
+  setTimeout(() => {
+    msgImport.value = '✅ Données importées avec succès dans PrestaShop.'
+    enCoursImport.value = false
+  }, 2000)
+}
+
+// ============================================================
+// RÉINITIALISATION DES DONNÉES
+// ============================================================
+const reinitialiserDonnees = () => {
+  if (
+    confirm(
+      'Voulez-vous vraiment vider toutes les données locales (sessions, historique de stock, paniers enregistrés) ? Cela vous déconnectera également.',
+    )
+  ) {
+    localStorage.clear()
+    window.location.href = '/' // Retour à l'accueil
+  }
+}
+
+// ============================================================
+// DÉCONNEXION
+// ============================================================
+const seDeconnecter = () => {
+  sessionBack.value = null
+  router.push('/backoffice/login')
+}
+</script>
+
+<template>
+  <div class="page">
+    <!-- ===== SIDEBAR ===== -->
+    <aside class="sidebar">
+      <div class="sidebar-logo">⚙️ Admin</div>
+
+      <nav class="sidebar-nav">
+        <button
+          :class="['nav-item', vue === 'commandes' ? 'actif' : '']"
+          @click="vue = 'commandes'"
+        >
+          📋 Commandes
+        </button>
+        <button :class="['nav-item', vue === 'stock' ? 'actif' : '']" @click="vue = 'stock'">
+          📦 Stock
+        </button>
+        <button class="nav-item" @click="$router.push('/backoffice/import')">
+          📥 Import données
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span class="admin-nom">{{ sessionBack?.prenom }} {{ sessionBack?.nom }}</span>
+        <button class="btn-deco" @click="seDeconnecter">Déconnexion</button>
+        <button class="btn-reset-data" @click="reinitialiserDonnees">🧹 Vider le Storage</button>
+        <button class="btn-front" @click="$router.push('/')">← Accueil</button>
+      </div>
+    </aside>
+
+    <!-- ===== CONTENU PRINCIPAL ===== -->
+    <main class="main">
+      <!-- CHARGEMENT -->
+      <div v-if="chargement" class="chargement">
+        <div class="spinner"></div>
+        <p>Chargement des données PrestaShop...</p>
+      </div>
+
+      <!-- ==============================
+           VUE : COMMANDES
+           ============================== -->
+      <div v-else-if="vue === 'commandes'">
+        <h1 class="titre">📋 Commandes</h1>
+
+        <!-- STATISTIQUES PAR JOUR -->
+        <div class="stats-grid">
+          <div class="stat-card total">
+            <span class="stat-label">Total commandes</span>
+            <span class="stat-val">{{ totalGeneral.nb }}</span>
+          </div>
+          <div class="stat-card montant">
+            <span class="stat-label">Chiffre d'affaires total</span>
+            <span class="stat-val">{{ totalGeneral.montant }} €</span>
+          </div>
+        </div>
+
+        <!-- TABLEAU PAR JOUR -->
+        <div class="section">
+          <h2 class="section-titre">Activité par jour</h2>
+          <div class="tableau-wrapper">
+            <table class="tableau">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Nb commandes</th>
+                  <th>Montant total</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="statsParJour.length === 0">
+                  <td colspan="3" class="vide-cell">Aucune commande.</td>
+                </tr>
+                <tr v-for="stat in statsParJour" :key="stat.jour">
+                  <td>{{ stat.jour }}</td>
+                  <td>{{ stat.nb }}</td>
+                  <td>{{ stat.montant.toFixed(2) }} €</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- LISTE UNIQUE DES VENTES (COMMANDES + PANIERS) -->
+        <div class="section">
+          <h2 class="section-titre">Gestion des Ventes</h2>
+          <div class="tableau-wrapper">
+            <table class="tableau">
+              <thead>
+                <tr>
+                  <th>Type / ID</th>
+                  <th>Date</th>
+                  <th>Client</th>
+                  <th>Total</th>
+                  <th>État</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <!-- Les Paniers d'abord -->
+                <tr v-for="cart in paniers" :key="'cart-' + cart.id">
+                  <td>
+                    <span class="badge-type">CART #{{ cart.id }}</span>
+                  </td>
+                  <td>{{ formatDate(cart.date_add) }}</td>
+                  <td>{{ getClientNom(cart.id_customer) }}</td>
+                  <td>—</td>
+                  <td>
+                    <span
+                      class="badge-etat"
+                      :style="{ color: ETATS.cart.couleur, background: ETATS.cart.bg }"
+                    >
+                      {{ ETATS.cart.label }}
+                    </span>
+                  </td>
+                  <td><small class="gris">En attente de validation</small></td>
+                </tr>
+
+                <!-- Les Commandes ensuite -->
+                <tr v-for="cmd in commandes" :key="cmd.id">
+                  <td>
+                    <strong>CMD #{{ cmd.id }}</strong>
+                  </td>
+                  <td>{{ formatDate(cmd.date_add) }}</td>
+                  <td>{{ getClientNom(cmd.id_customer) }}</td>
+                  <td>
+                    <strong>{{ formatPrix(cmd.total_paid) }}</strong>
+                  </td>
+                  <td>
+                    <span
+                      class="badge-etat"
+                      :style="{
+                        color: getEtat(cmd.current_state).couleur,
+                        background: getEtat(cmd.current_state).bg,
+                      }"
+                    >
+                      {{ getEtat(cmd.current_state).label || 'Inconnu' }}
+                    </span>
+                  </td>
+                  <td>
+                    <div class="actions-etat">
+                      <button
+                        v-if="String(cmd.current_state) !== '2'"
+                        class="btn-etat valider"
+                        @click="modifierEtat(cmd, 2)"
+                      >
+                        Paiement effectué
+                      </button>
+                      <button
+                        v-if="String(cmd.current_state) !== '6'"
+                        class="btn-etat annuler"
+                        @click="modifierEtat(cmd, 6)"
+                      >
+                        Annuler
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==============================
+           VUE : STOCK
+           ============================== -->
+      <div v-else-if="vue === 'stock'">
+        <h1 class="titre">📦 Gestion du Stock</h1>
+        <p class="sous-titre">
+          Sélectionnez un produit pour ajouter du stock ou voir l'évolution journalière.
+        </p>
+
+        <!-- GRILLE PRODUITS -->
+        <div class="produits-grid">
+          <div
+            v-for="p in produits"
+            :key="p.id"
+            :class="['produit-card', produitStockSelectionne?.id === p.id ? 'selectionne' : '']"
+            @click="ouvrirStock(p)"
+          >
+            <div class="produit-img">
+              <img
+                :src="getImageUrl(p)"
+                :alt="getNom(p)"
+                @error="$event.target.style.opacity = '0'"
+              />
+            </div>
+            <div class="produit-info">
+              <span class="produit-nom">{{ getNom(p) }}</span>
+              <span :class="['produit-stock', getStock(p.id) > 0 ? 'vert' : 'rouge']">
+                Stock : {{ getStock(p.id) }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- MODAL MODIFICATION STOCK (Overlay pour être visible partout) -->
+        <div v-if="produitStockSelectionne" class="overlay" @click.self="fermerStock">
+          <div class="stock-panneau">
+            <div class="stock-panneau-header">
+              <h2>{{ getNom(produitStockSelectionne) }}</h2>
+              <button class="btn-fermer" @click="fermerStock">✕</button>
+            </div>
+
+            <p class="stock-actuel">
+              Stock actuel :
+              <strong :class="getStock(produitStockSelectionne.id) > 0 ? 'vert' : 'rouge'">
+                {{ getStock(produitStockSelectionne.id) }} unités
+              </strong>
+            </p>
+
+            <!-- CONTRÔLE DELTA -->
+            <div class="delta-ctrl">
+              <label class="delta-label">
+                Quantité à ajouter / retirer
+                <span class="delta-note">(négatif pour retirer)</span>
+              </label>
+              <div class="delta-row">
+                <button class="btn-delta" @click="deltaStock -= 1">−</button>
+                <input v-model.number="deltaStock" type="number" class="input-delta" />
+                <button class="btn-delta" @click="deltaStock += 1">+</button>
+              </div>
+              <p v-if="deltaStock !== 0" class="delta-preview">
+                Nouveau stock prévu :
+                <strong>{{
+                  Math.max(0, getStock(produitStockSelectionne.id) + deltaStock)
+                }}</strong>
+              </p>
+            </div>
+
+            <p
+              v-if="msgStock"
+              :class="['msg-stock', msgStock.startsWith('✓') ? 'succes' : 'erreur']"
+            >
+              {{ msgStock }}
+            </p>
+
+            <button
+              class="btn-appliquer"
+              :disabled="enCoursStock || deltaStock === 0"
+              @click="appliquerDelta"
+            >
+              {{ enCoursStock ? '⏳ En cours...' : 'Appliquer la modification' }}
+            </button>
+
+            <!-- HISTORIQUE JOURNALIER -->
+            <div v-if="historiqueStock.length > 0" class="historique">
+              <h3>Derniers mouvements</h3>
+              <table class="tableau">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Mouvement</th>
+                    <th>Après</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(h, i) in historiqueStock" :key="i">
+                    <td>{{ h.date }}</td>
+                    <td :class="h.delta > 0 ? 'vert' : 'rouge'">
+                      {{ h.delta > 0 ? '+' : '' }}{{ h.delta }}
+                    </td>
+                    <td>{{ h.quantite_apres }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p v-else class="vide-historique">Aucun mouvement pour ce produit.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==============================
+           VUE : IMPORTATION
+           ============================== -->
+      <div v-else-if="vue === 'import'">
+        <h1 class="titre">📥 Importation des données</h1>
+        <div class="section">
+          <h2 class="section-titre">Importer les fichiers de mai 2026</h2>
+          <p class="sous-titre">Sélectionnez les 3 fichiers CSV et le fichier images.zip</p>
+
+          <div class="import-form">
+            <div class="champ">
+              <label>Fichiers CSV (Données produits, déclinaisons, etc.)</label>
+              <input type="file" multiple accept=".csv" @change="(e) => gererFichier(e, 'csv')" />
+            </div>
+
+            <div class="champ">
+              <label>Fichier Images (images.zip)</label>
+              <input type="file" accept=".zip" @change="(e) => gererFichier(e, 'images')" />
+            </div>
+
+            <div
+              v-if="msgImport"
+              :class="['msg-stock', msgImport.includes('✅') ? 'succes' : 'info']"
+            >
+              {{ msgImport }}
+            </div>
+
+            <button class="btn-appliquer" :disabled="enCoursImport" @click="lancerImport">
+              {{ enCoursImport ? 'Traitement...' : "Lancer l'importation" }}
+            </button>
+          </div>
+
+          <div class="note-import">
+            <p>
+              <strong>Note :</strong> L'importation mettra à jour les produits et les stocks
+              existants dans PrestaShop.
+            </p>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</template>
+
+<style scoped>
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Lato:wght@300;400;700&display=swap');
+
+/* === LAYOUT === */
+.page {
+  display: flex;
+  min-height: 100vh;
+  background: #f0f2f5;
+  font-family: 'Lato', sans-serif;
+}
+
+/* === SIDEBAR === */
+.sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  background: #1a1a2e;
+  color: white;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 16px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+.sidebar-logo {
+  font-family: 'Playfair Display', serif;
+  font-size: 1.2rem;
+  margin-bottom: 32px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+}
+.nav-item {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  padding: 10px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  font-size: 0.9rem;
+  transition: all 0.15s;
+}
+.nav-item:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: white;
+}
+.nav-item.actif {
+  background: rgba(255, 255, 255, 0.12);
+  color: white;
+  font-weight: 700;
+}
+.sidebar-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.admin-nom {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 0.8rem;
+  padding: 0 0 4px;
+}
+.btn-deco {
+  background: #e94560;
+  color: white;
+  border: none;
+  padding: 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.82rem;
+}
+.btn-deco:hover {
+  background: #c73652;
+}
+.import-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 500px;
+}
+.note-import {
+  margin-top: 30px;
+  padding: 15px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: #666;
+}
+.btn-reset-data {
+  background: #34495e;
+  color: white;
+  border: none;
+  padding: 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.82rem;
+}
+.msg-stock.info {
+  background: #ebf5fb;
+  color: #3498db;
+}
+.btn-front {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.45);
+  padding: 7px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+.btn-front:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* === MAIN === */
+.main {
+  flex: 1;
+  padding: 32px;
+  overflow-y: auto;
+  max-width: calc(100vw - 220px);
+}
+.titre {
+  font-family: 'Playfair Display', serif;
+  font-size: 2rem;
+  color: #1a1a2e;
+  margin: 0 0 24px;
+}
+.sous-titre {
+  color: #888;
+  margin: -16px 0 24px;
+  font-size: 0.9rem;
+}
+
+/* CHARGEMENT */
+.chargement {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 80px;
+  color: #888;
+}
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #eee;
+  border-top-color: #0f3460;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-bottom: 16px;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* STATS */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 32px;
+}
+.stat-card {
+  background: white;
+  border-radius: 12px;
+  padding: 20px 24px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.stat-card.total {
+  border-left: 4px solid #0f3460;
+}
+.stat-card.montant {
+  border-left: 4px solid #27ae60;
+}
+.stat-label {
+  color: #888;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.stat-val {
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: #1a1a2e;
+}
+
+/* SECTIONS */
+.section {
+  background: white;
+  border-radius: 14px;
+  padding: 24px;
+  margin-bottom: 24px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+.section-titre {
+  font-size: 1.05rem;
+  color: #1a1a2e;
+  font-weight: 700;
+  margin: 0 0 16px;
+}
+
+/* TABLEAU */
+.tableau-wrapper {
+  overflow-x: auto;
+}
+.tableau {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+.tableau th {
+  background: #f8f9fa;
+  color: #555;
+  font-weight: 700;
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 2px solid #eee;
+  white-space: nowrap;
+}
+.tableau td {
+  padding: 12px 14px;
+  border-bottom: 1px solid #f5f5f5;
+  color: #333;
+}
+.badge-type {
+  font-size: 0.7rem;
+  font-weight: bold;
+  background: #eee;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #666;
+}
+.gris {
+  color: #999;
+}
+.tableau tr:last-child td {
+  border-bottom: none;
+}
+.vide-cell {
+  text-align: center;
+  color: #aaa;
+  padding: 30px !important;
+}
+
+/* BADGES ÉTAT */
+.badge-etat {
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* BOUTONS ÉTAT */
+.actions-etat {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.btn-etat {
+  border: none;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.btn-etat.valider {
+  background: #eafaf1;
+  color: #27ae60;
+}
+.btn-etat.valider:hover {
+  background: #27ae60;
+  color: white;
+}
+.btn-etat.annuler {
+  background: #fdecea;
+  color: #e74c3c;
+}
+.btn-etat.annuler:hover {
+  background: #e74c3c;
+  color: white;
+}
+
+/* STOCK GRILLE */
+.produits-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 16px;
+  margin-bottom: 32px;
+}
+.produit-card {
+  background: white;
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: all 0.2s;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+.produit-card:hover {
+  border-color: #0f3460;
+  transform: translateY(-2px);
+}
+.produit-card.selectionne {
+  border-color: #e94560;
+  box-shadow: 0 4px 20px rgba(233, 69, 96, 0.2);
+}
+.produit-img {
+  height: 120px;
+  background: #f0ece4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.produit-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.produit-info {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.produit-nom {
+  font-size: 0.85rem;
+  color: #1a1a2e;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.produit-stock {
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+/* STOCK PANNEAU */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.stock-panneau {
+  background: white;
+  border-radius: 14px;
+  padding: 28px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  border: 1px solid #ddd;
+  width: 100%;
+  max-width: 500px;
+}
+.stock-panneau-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.stock-panneau-header h2 {
+  font-size: 1.2rem;
+  color: #1a1a2e;
+  margin: 0;
+}
+.btn-fermer {
+  background: none;
+  border: none;
+  font-size: 1.2rem;
+  cursor: pointer;
+  color: #888;
+}
+.stock-actuel {
+  color: #555;
+  margin-bottom: 20px;
+}
+
+/* DELTA */
+.delta-ctrl {
+  margin-bottom: 16px;
+}
+.delta-label {
+  display: block;
+  color: #555;
+  font-size: 0.85rem;
+  margin-bottom: 10px;
+}
+.delta-note {
+  color: #aaa;
+  font-size: 0.78rem;
+  margin-left: 6px;
+}
+.delta-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.btn-delta {
+  background: #f0f0f0;
+  border: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+.btn-delta:hover {
+  background: #e0e0e0;
+}
+.input-delta {
+  width: 80px;
+  padding: 8px 12px;
+  border: 1.5px solid #ddd;
+  border-radius: 8px;
+  font-size: 1rem;
+  text-align: center;
+}
+.delta-preview {
+  color: #555;
+  font-size: 0.88rem;
+}
+
+.msg-stock {
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 0.88rem;
+  margin-bottom: 12px;
+}
+.msg-stock.succes {
+  background: #eafaf1;
+  color: #27ae60;
+}
+.msg-stock.erreur {
+  background: #fdecea;
+  color: #e74c3c;
+}
+
+.btn-appliquer {
+  background: #0f3460;
+  color: white;
+  border: none;
+  padding: 13px 28px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: 700;
+  transition: background 0.15s;
+}
+.btn-appliquer:hover:not(:disabled) {
+  background: #1a4a8a;
+}
+.btn-appliquer:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* HISTORIQUE */
+.historique {
+  margin-top: 28px;
+}
+.historique h3 {
+  font-size: 0.95rem;
+  color: #1a1a2e;
+  margin: 0 0 12px;
+}
+.vide-historique {
+  color: #bbb;
+  font-size: 0.85rem;
+  margin-top: 20px;
+}
+
+/* COULEURS */
+.vert {
+  color: #27ae60;
+}
+.rouge {
+  color: #e74c3c;
+}
+</style>

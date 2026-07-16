@@ -1,20 +1,13 @@
 <script setup>
-import { useRouter } from 'vue-router'
-const router = useRouter()
-
-// 1. La logique (JavaScript)
-const saluer = () => {
-  router.push('/UserLog')
-};
+import { useRoute } from 'vue-router'
+const route = useRoute()
 </script>
 
 <template>
-  <!-- 2. La vue (HTML) -->
-  <div v-if="$route.path === '/'">
-    <h1>Test de base Vue.js</h1>
-    
-    <!-- @click est le raccourci pour écouter un clic -->
-    <button @click="saluer">Clique ici</button>
-  </div>
+  <!--
+    App.vue est juste le conteneur du router.
+    La page d'accueil / redirige vers /accueil (choix front/back)
+    défini dans index.js
+  -->
   <router-view></router-view>
 </template>

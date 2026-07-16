@@ -1,7 +1,7 @@
 2. FrontOffice 
 a. créer la page d’accueil pour afficher les produits 
-
 avec fiche produit 
+
 b. faire marcher le workflow d’achat 
 
 gestion de panier 
