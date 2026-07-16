@@ -15,7 +15,6 @@ if (!sessionBack.value) router.push('/backoffice/login')
 const etape = ref('selection') // 'selection' | 'validation' | 'import' | 'done'
 const enCours = ref(false)
 
-
 // Fichiers sélectionnés
 const fichier1 = ref(null) // produits
 const fichier2 = ref(null) // déclinaisons/stock
@@ -354,7 +353,7 @@ const peutImporter = computed(() => totalErreurs.value === 0)
 // ============================================================
 const log = (msg, type = 'info') => {
   logImport.value.push({ msg, type, ts: new Date().toLocaleTimeString() })
-  if (type === 'erreur') resumeImport.value.erreurs++ 
+  if (type === 'erreur') resumeImport.value.erreurs++
 }
 
 const lancerImport = async () => {
@@ -491,11 +490,18 @@ const lancerImport = async () => {
       wholesale_price: prixAchat?.toFixed(6) || '0.000000',
       id_category_default: idCat,
       active: 1,
+      state: 1,
       available_for_order: 1,
       show_price: 1,
       visibility: 'both',
       condition: 'new',
       available_date: dateAvailability,
+      associations: {
+        categories: {
+          nodeType: 'category',
+          rows: [{ id: idCat }],
+        },
+      },
       link_rewrite: [
         {
           id: 1,
@@ -563,6 +569,9 @@ const lancerImport = async () => {
         const s = rawS ? (Array.isArray(rawS) ? rawS[0] : rawS) : null
         if (s?.id) {
           await api.put('stock_availables', s.id, {
+            id: s.id,
+            id_shop: s.id_shop || 1,
+            id_shop_group: s.id_shop_group || 1,
             id_product: idProd,
             id_product_attribute: 0,
             quantity: stockInitial,
@@ -589,6 +598,9 @@ const lancerImport = async () => {
       if (s?.id) {
         const nouvelleQte = (parseInt(s.quantity) || 0) + stockInitial
         await api.put('stock_availables', s.id, {
+          id: s.id,
+          id_shop: s.id_shop || 1,
+          id_shop_group: s.id_shop_group || 1,
           id_product: idProd,
           id_product_attribute: 0,
           quantity: nouvelleQte,
@@ -676,6 +688,26 @@ const lancerImport = async () => {
     // Déterminer l'état : "paiement accepté" -> état 2, sinon -> état 1
     const idEtat = row.etat && row.etat.toLowerCase().includes('paiement') ? 2 : 1
 
+    // Parser les achats au format: [("T_01";3;"ngoza"),("C_03";1;"")]
+    const rowsCart = []
+    const re = /\("([^"]+)";(\d+);"[^"]*"\)/g
+    let matchAchat
+    while ((matchAchat = re.exec(row.achat)) !== null) {
+      const pRef = matchAchat[1]
+      const pQty = parseInt(matchAchat[2], 10)
+      const idProdP = mapProduits[pRef] || mapProduits[pRef.toLowerCase()]
+      if (idProdP) {
+        rowsCart.push({ id_product: idProdP, id_product_attribute: 0, quantity: pQty })
+      }
+    }
+    if (rowsCart.length === 0) {
+      rowsCart.push({
+        id_product: mapProduits[row.achat] || 1,
+        id_product_attribute: 0,
+        quantity: 1,
+      })
+    }
+
     // Créer le panier
     const resPan = await api.post('carts', {
       id_customer: idClient,
@@ -687,13 +719,7 @@ const lancerImport = async () => {
       associations: {
         cart_rows: {
           nodeType: 'cart_row',
-          rows: [
-            {
-              id_product: mapProduits[row.achat] || 1, // On lie le produit acheté
-              id_product_attribute: 0,
-              quantity: 1,
-            },
-          ],
+          rows: rowsCart,
         },
       },
     })
@@ -977,15 +1003,7 @@ const lancerReset = async () => {
         <button class="nav-item actif">📥 Import données</button>
       </nav>
       <div class="sidebar-reset">
-        <button
-          class="btn-reset-ps"
-          @click="
-            resetVisible = !resetVisible;
-            logReset = [];
-          "
-        >
-          🗑️ Réinitialiser les données
-        </button>
+        <button class="btn-reset-ps" @click="logReset = []">🗑️ Réinitialiser les données</button>
       </div>
       <div class="sidebar-footer">
         <span class="admin-nom">{{ sessionBack?.prenom }}</span>
@@ -1273,8 +1291,6 @@ const lancerReset = async () => {
             @click="
               resetVisible = false
               reinitialiser()
-              resetVisible = false;
-              reinitialiser();
             "
           >
             Fermer et recommencer un import
