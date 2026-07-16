@@ -1,0 +1,5 @@
+fenitra
+
+case a cocher importer ou non photo
+panier qui peux valider commande
+commande etat visible, bouton dupliquer sur un commande que j'ai fait, un page pour dire ok ou cette produit manque de ceci ou de cela, apres directement livre

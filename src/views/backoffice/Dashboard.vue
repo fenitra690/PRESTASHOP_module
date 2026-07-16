@@ -27,6 +27,7 @@ const paniers = ref([]) // paniers PrestaShop (carts)
 const produits = ref([]) // produits pour le stock
 const stocks = ref([]) // stock_availables
 const clients = ref([]) // pour afficher les noms au lieu des IDs
+const categoriesList = ref([]) // pour les noms des catégories
 const chargement = ref(true)
 const etatsMap = ref({})
 
@@ -79,6 +80,13 @@ onMounted(async () => {
     if (raw) clients.value = Array.isArray(raw) ? raw : [raw]
   }
 
+  // Catégories
+  const resCats = await api.get('categories?display=[id,name]')
+  if (resCats) {
+    const raw = resCats.categories || resCats.prestashop?.categories?.category
+    if (raw) categoriesList.value = Array.isArray(raw) ? raw : [raw]
+  }
+
   // Produits
   const resProd = await api.get('products?display=full')
   if (resProd) {
@@ -117,6 +125,23 @@ onMounted(async () => {
 
   chargement.value = false
 })
+
+// ============================================================
+// UTILITAIRES
+// ============================================================
+const getNomCategorie = (id) => {
+  const cat = categoriesList.value.find((c) => String(c.id) === String(id))
+  if (id === 'Inconnue') {
+    return 'Catégorie N' // Affiche "Catégorie N" pour les produits sans catégorie par défaut
+  }
+  if (!cat) return 'Catégorie ' + id
+
+  if (typeof cat.name === 'string') return cat.name
+  if (Array.isArray(cat.name)) {
+    return cat.name.find((l) => String(l.id) === '2')?.value || cat.name[0]?.value || 'Cat'
+  }
+  return cat.name?.value || 'Catégorie ' + id
+}
 
 // ============================================================
 // UTILITAIRES
@@ -203,12 +228,13 @@ const statsParJour = computed(() => {
   // On compte uniquement les vraies commandes pour le CA
   commandes.value.forEach((cmd) => {
     const jour = formatDate(cmd.date_add).split(' ')[0]
-    if (!map[jour]) map[jour] = { jour, nb: 0, montant: 0 }
+    if (!map[jour]) map[jour] = { jour, nb: 0, montant: 0, montantTTC: 0 }
 
-    // On compte le montant pour toutes les commandes SAUF celles annulées (6)
-    map[jour].nb++
+    // On compte uniquement les commandes qui ne sont pas annulées (État 6)
     if (String(cmd.current_state) !== '6') {
-      map[jour].montant += parseFloat(cmd.total_paid) || 0
+      map[jour].nb++
+      map[jour].montant += parseFloat(cmd.total_products) || 0
+      map[jour].montantTTC += parseFloat(cmd.total_products_wt) || parseFloat(cmd.total_paid) || 0
     }
   })
 
@@ -222,15 +248,17 @@ const statsParJour = computed(() => {
 
 const totalGeneral = computed(() => {
   let nb = 0,
-    montant = 0
+    montant = 0,
+    montantTTC = 0
   commandes.value.forEach((cmd) => {
-    nb++
     // CA global : tout sauf annulé
     if (String(cmd.current_state) !== '6') {
-      montant += parseFloat(cmd.total_paid) || 0
+      nb++
+      montant += parseFloat(cmd.total_products) || 0
+      montantTTC += parseFloat(cmd.total_products_wt) || parseFloat(cmd.total_paid) || 0
     }
   })
-  return { nb, montant: montant.toFixed(2) }
+  return { nb, montant: montant.toFixed(2), montantTTC: montantTTC.toFixed(2) }
 })
 
 // ============================================================
@@ -238,19 +266,19 @@ const totalGeneral = computed(() => {
 // ============================================================
 const statistiquesData = computed(() => {
   let venteTotalHT = 0
+  let venteTotalTTC = 0
   let achatTotalHT = 0
+  let stockValeurAchat = 0
   const catMap = {}
 
   // 1. Initialiser les catégories et la quantité disponible
   produits.value.forEach((p) => {
     const catId = p.id_category_default || 'Inconnue'
-    const catNom = p.associations?.categories
-      ? p.associations.categories.find((c) => c.id == catId)?.name || 'Catégorie ' + catId
-      : 'Catégorie ' + catId
+    const catNom = getNomCategorie(catId)
     if (!catMap[catId]) {
       catMap[catId] = {
         id: catId,
-        nom: 'Catégorie ' + catId,
+        nom: catNom,
         qte_physique: 0,
         qte_reserve: 0,
         qte_dispo: 0,
@@ -258,6 +286,7 @@ const statistiquesData = computed(() => {
       }
     }
     catMap[catId].qte_dispo += getStock(p.id)
+    stockValeurAchat += getStock(p.id) * (parseFloat(p.wholesale_price) || 0)
   })
 
   // 2. Parcourir les commandes
@@ -265,10 +294,6 @@ const statistiquesData = computed(() => {
     const etat = String(cmd.current_state)
     const isAnnulee = etat === '6'
     const isLivree = etat === '5' || etat === '2'
-
-    if (!isAnnulee) {
-      venteTotalHT += parseFloat(cmd.total_paid_tax_excl) || parseFloat(cmd.total_paid) / 1.2 || 0
-    }
 
     const rowsRaw = cmd.associations?.order_rows?.order_row || cmd.associations?.order_rows
     if (!rowsRaw) return
@@ -285,7 +310,7 @@ const statistiquesData = computed(() => {
       if (!catMap[catId]) {
         catMap[catId] = {
           id: catId,
-          nom: 'Catégorie ' + catId,
+          nom: getNomCategorie(catId),
           qte_physique: 0,
           qte_reserve: 0,
           qte_dispo: 0,
@@ -293,20 +318,25 @@ const statistiquesData = computed(() => {
         }
       }
 
-      const wsPrice = p ? parseFloat(p.wholesale_price || 0) : 0
-      const priceHT = parseFloat(row.unit_price_tax_excl) || (p ? parseFloat(p.price || 0) : 0)
-
-      if (!isAnnulee) {
-        achatTotalHT += wsPrice * qte
-      }
+      const wsPrice = p ? parseFloat(p.wholesale_price) || 0 : 0
+      // Utiliser le prix HT réel de la ligne de commande et non le prix actuel du produit
+      const priceHT = parseFloat(row.unit_price_tax_excl) || 0
+      const priceTTC = parseFloat(row.unit_price_tax_incl) || 0
 
       if (isLivree) {
-        catMap[catId].benefice += (priceHT - wsPrice) * qte
+        // Changement : on ne compte que les commandes livrées/payées
+        achatTotalHT += wsPrice * qte
+        venteTotalHT += priceHT * qte
+        venteTotalTTC += priceTTC * qte
       }
 
       const isReserve = ['1', '2', '3'].includes(etat)
       if (isReserve) {
         catMap[catId].qte_reserve += qte
+      }
+
+      if (isLivree) {
+        catMap[catId].benefice += (priceHT - wsPrice) * qte
       }
     })
   })
@@ -316,9 +346,15 @@ const statistiquesData = computed(() => {
     cat.qte_physique = cat.qte_dispo + cat.qte_reserve
   })
 
+  const beneficeGlobal = venteTotalHT - achatTotalHT
+
   return {
     venteTotalHT,
+    venteTotalTTC,
     achatTotalHT,
+    beneficeGlobal,
+    stockValeurAchat,
+    margeGlobale: venteTotalHT > 0 ? (beneficeGlobal / venteTotalHT) * 100 : 0,
     categories: Object.values(catMap),
   }
 })
@@ -574,6 +610,10 @@ const seDeconnecter = () => {
             <span class="stat-label">Chiffre d'affaires total</span>
             <span class="stat-val">{{ totalGeneral.montant }} €</span>
           </div>
+          <div class="stat-card montant">
+            <span class="stat-label">Chiffre d'affaires TTC</span>
+            <span class="stat-val">{{ totalGeneral.montantTTC }} €</span>
+          </div>
         </div>
 
         <!-- TABLEAU PAR JOUR -->
@@ -822,17 +862,26 @@ const seDeconnecter = () => {
             <span class="stat-val">{{ statistiquesData.venteTotalHT.toFixed(2) }} €</span>
           </div>
           <div class="stat-card">
+            <span class="stat-label">Total Vente TTC</span>
+            <span class="stat-val">{{ statistiquesData.venteTotalTTC.toFixed(2) }} €</span>
+          </div>
+          <div class="stat-card">
             <span class="stat-label">Total Achat HT</span>
             <span class="stat-val">{{ statistiquesData.achatTotalHT.toFixed(2) }} €</span>
           </div>
-          <div class="stat-card montant">
+          <div class="stat-card total">
             <span class="stat-label">Bénéfice Global</span>
-            <span class="stat-val"
-              >{{
-                (statistiquesData.venteTotalHT - statistiquesData.achatTotalHT).toFixed(2)
-              }}
-              €</span
-            >
+            <span class="stat-val">{{ statistiquesData.beneficeGlobal.toFixed(2) }} €</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Marge Globale</span>
+            <span class="stat-val" :class="statistiquesData.margeGlobale > 20 ? 'vert' : 'orange'">
+              {{ statistiquesData.margeGlobale.toFixed(1) }} %
+            </span>
+          </div>
+          <div class="stat-card montant">
+            <span class="stat-label">Valeur Stock (Achat)</span>
+            <span class="stat-val">{{ statistiquesData.stockValeurAchat.toFixed(2) }} €</span>
           </div>
         </div>
 

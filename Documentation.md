@@ -403,4 +403,4 @@ console.log(structure)
 ou
 
 // Le "null, 2" force un affichage espacé et super lisible dans les logs
-console.log(JSON.stringify(laReponseDeLapi, null, 2))
+console.log(JSON.stringify(laReponseDeLapi, null, 2)) 

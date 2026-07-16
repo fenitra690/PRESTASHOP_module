@@ -171,6 +171,12 @@ export default {
 
       const response = await apiClientXml.put(`/${resource}/${id}?ws_key=${WS_KEY}`, xml)
       try { return parser.parse(response.data) } catch(e) { console.error('PARSE ERROR', response.data); throw e; }
+      
+      const data = typeof response.data === 'string' && response.data.includes('<') 
+        ? parser.parse(response.data) 
+        : response.data
+
+      return data
     } catch (error) {
       console.error(`[API PUT] Erreur sur ${resource}/${id}:`, error.response?.data || error)
       return null

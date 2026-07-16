@@ -7,6 +7,7 @@ import JSZip from 'jszip'
 
 const router = useRouter()
 const sessionBack = db.session('admin', null)
+const checker = ref(2)
 if (!sessionBack.value) router.push('/backoffice/login')
 
 // ============================================================
@@ -63,11 +64,12 @@ const COLS_F3 = ['date', 'nom', 'email', 'pwd', 'adresse', 'achat', 'etat']
 function parseCSV(texte) {
   // Gère les virgules dans les guillemets
   const lignes = texte
+    .replace(/^\uFEFF/, '') // Supprime le BOM UTF-8 si présent
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
     .split('\n')
     .filter((l) => l.trim())
-  const headers = parseLigneCSV(lignes[0])
+  const headers = parseLigneCSV(lignes[0]).map((h) => h.trim()) // Trim les noms de colonnes
   const rows = []
   for (let i = 1; i < lignes.length; i++) {
     if (!lignes[i].trim()) continue
@@ -117,9 +119,15 @@ function estDateValide(s) {
 
 // Convertir DD/MM/YYYY -> YYYY-MM-DD (pour PrestaShop)
 function dateVersPS(s) {
-  if (!s || !s.includes('/')) return '2026-05-18'
-  const [j, m, a] = s.split('/')
-  return `${a}-${m}-${j}`
+  if (!s || !s.includes('/')) {
+    const today = new Date()
+    return today.toISOString().split('T')[0]
+  }
+  // Nettoyage des espaces éventuels et split
+  const parties = s.trim().split('/')
+  if (parties.length !== 3) return new Date().toISOString().split('T')[0]
+  const [j, m, a] = parties
+  return `${a}-${m.padStart(2, '0')}-${j.padStart(2, '0')}`
 }
 
 // ============================================================
@@ -453,6 +461,28 @@ const lancerImport = async () => {
   // ============================================================
   log('--- Import des produits ---')
 
+  const mapTaxes = {}
+  log('Chargement des règles de taxes existantes...')
+  const resTaxes = await api.get('tax_rule_groups?display=full')
+  if (resTaxes) {
+    const rawTaxes =
+      resTaxes.tax_rule_groups || resTaxes.prestashop?.tax_rule_groups?.tax_rule_group
+    const listeTaxes = rawTaxes ? (Array.isArray(rawTaxes) ? rawTaxes : [rawTaxes]) : []
+
+    for (const t of listeTaxes) {
+      if (t.name) {
+        const match = t.name.match(/(\d+(?:[\.,]\d+)?)%/)
+        if (match) {
+          const valStr = match[1]
+          mapTaxes[`${valStr}%`] = t.id
+          mapTaxes[`${valStr.replace('.', ',')}%`] = t.id
+          mapTaxes[`${valStr.replace(',', '.')}%`] = t.id
+        }
+      }
+    }
+  }
+  const defaultTax = 0
+
   // Map reference -> id_product (pour les étapes suivantes)
   const mapProduits = {}
 
@@ -476,7 +506,13 @@ const lancerImport = async () => {
     }
 
     const idCat = mapCategories[p.categorie?.toLowerCase()] || 2
-    const prixHT = parseNombre(p.prix_ttc)
+
+    // Calcul du prix HT réel à partir du TTC et de la taxe du CSV (ex: 12.5 / 1.1165)
+    const prixTTC_CSV = parseNombre(p.prix_ttc) || 0
+    const taxeTexte = p.Taxe || '0%'
+    const tauxTaxe = parseFloat(taxeTexte.replace(',', '.').replace('%', '')) / 100
+    const prixHT = prixTTC_CSV / (1 + tauxTaxe)
+
     const prixAchat = parseNombre(p.prix_achat)
     const dateAvailability = dateVersPS(p.date_availability_produit)
 
@@ -490,6 +526,7 @@ const lancerImport = async () => {
       price: prixHT?.toFixed(6) || '0.000000',
       wholesale_price: prixAchat?.toFixed(6) || '0.000000',
       id_category_default: idCat,
+      id_tax_rules_group: mapTaxes[p.Taxe] || defaultTax,
       active: 1,
       state: 1,
       available_for_order: 1,
@@ -552,20 +589,19 @@ const lancerImport = async () => {
   const historiqueStockStorage = db.g('stock_historique') || []
 
   for (const d of declinaisons.value) {
-    const idProd = mapProduits[d.reference]
+    // Recherche plus robuste (sans espaces et insensible à la casse)
+    const refNettoyee = d.reference.trim().toUpperCase()
+    const idProd = mapProduits[refNettoyee] || mapProduits[d.reference.trim()]
+
     if (!idProd) {
       log(`Déclinaison ignorée : produit "${d.reference}" introuvable`, 'avert')
       continue
     }
 
     const stockInitial = parseInt(d.stock_initial) || 0
-    const infoProd = produits.value.find(
-      (p) => p.reference === d.reference || p.reference === d.reference.toUpperCase(),
-    )
-    const mvtDate =
-      infoProd && infoProd.date_availability_produit
-        ? infoProd.date_availability_produit
-        : '18/05/2026'
+    const infoProd = produits.value.find((p) => p.reference.trim().toUpperCase() === refNettoyee)
+    // On utilise la date du produit dans le CSV, sinon la date actuelle
+    const mvtDate = infoProd?.date_availability_produit || new Date().toLocaleDateString('fr-FR')
 
     const enregMouvement = (qteApres, deltaVal) => {
       historiqueStockStorage.push({
@@ -655,6 +691,19 @@ const lancerImport = async () => {
     }
   }
 
+  // Pre-charger les commandes existantes pour ne pas les dedupliquer a chaque import
+  const ordersResponse = await api.get('orders?display=[id_customer,date_add]')
+  const alreadyImportedOrders = new Set()
+  if (ordersResponse) {
+    const rawO = ordersResponse.orders || ordersResponse.prestashop?.orders?.order
+    const listO = rawO ? (Array.isArray(rawO) ? rawO : [rawO]) : []
+    for (const o of listO) {
+      if (o.date_add && o.id_customer) {
+        alreadyImportedOrders.add(`${o.id_customer}-${o.date_add.substring(0, 10)}`)
+      }
+    }
+  }
+
   for (const row of commandes.value) {
     // Créer le client s'il n'existe pas
     let idClient = mapClients[row.email]
@@ -711,19 +760,45 @@ const lancerImport = async () => {
       continue
     }
 
-    // Déterminer l'état : "paiement accepté" -> état 2, sinon -> état 1
-    const idEtat = row.etat && row.etat.toLowerCase().includes('paiement') ? 2 : 1
+    // Déterminer l'état
+    let idEtat = 1 // en attente
+    const etatCsv = (row.etat || '').toLowerCase()
+    if (etatCsv.includes('paiement')) idEtat = 2
+    else if (etatCsv.includes('livr')) idEtat = 5
+    else if (etatCsv.includes('annul')) idEtat = 6
 
     // Parser les achats au format: [("T_01";3;"ngoza"),("C_03";1;"")]
     const rowsCart = []
-    const re = /\("([^"]+)";(\d+);"[^"]*"\)/g
+    const re = /\("([^"]+)";(\d+);"([^"]*)"\)/g
+    let totalTTC_Cmd = 0
+    let totalHT_Cmd = 0
     let matchAchat
     while ((matchAchat = re.exec(row.achat)) !== null) {
       const pRef = matchAchat[1]
       const pQty = parseInt(matchAchat[2], 10)
+      const pKarazany = matchAchat[3]
+
       const idProdP = mapProduits[pRef] || mapProduits[pRef.toLowerCase()]
       if (idProdP) {
         rowsCart.push({ id_product: idProdP, id_product_attribute: 0, quantity: pQty })
+
+        // Chercher le prix spécifique dans le Fichier 2 (ex: 15€ pour kely)
+        const decli = declinaisons.value.find(
+          (d) =>
+            d.reference.trim().toUpperCase() === pRef.trim().toUpperCase() &&
+            d.karazany?.trim().toLowerCase() === pKarazany.trim().toLowerCase(),
+        )
+        const pBase = produits.value.find((p) => p.reference === pRef)
+        const prixUnitaireTTC =
+          decli && decli.prix_vente_ttc
+            ? parseNombre(decli.prix_vente_ttc)
+            : parseNombre(pBase?.prix_ttc) || 0
+
+        const taxeTexte = pBase?.Taxe || '0%'
+        const tauxTaxe = parseFloat(taxeTexte.replace(',', '.').replace('%', '')) / 100
+
+        totalTTC_Cmd += prixUnitaireTTC * pQty
+        totalHT_Cmd += (prixUnitaireTTC / (1 + tauxTaxe)) * pQty
       }
     }
     if (rowsCart.length === 0) {
@@ -736,6 +811,12 @@ const lancerImport = async () => {
 
     // Créer le panier
     const dateCmd = dateVersPS(row.date) + ' 12:00:00'
+    const dateCmdCourte = dateVersPS(row.date)
+
+    if (alreadyImportedOrders.has(`${idClient}-${dateCmdCourte}`)) {
+      log(`Commande de ${row.email} au ${dateCmdCourte} déjà importée, ignorée.`, 'avert')
+      continue
+    }
 
     const resPan = await api.post('carts', {
       id_customer: idClient,
@@ -772,12 +853,13 @@ const lancerImport = async () => {
       id_customer: idClient,
       id_carrier: 1,
       date_add: dateCmd,
+      date_upd: dateCmd, // On essaie de la passer au POST
       module: 'ps_cashondelivery',
       payment: 'Paiement a la livraison',
-      total_paid: '10.00',
-      total_paid_real: idEtat === 2 ? '10.00' : '0.00',
-      total_products: '10.00',
-      total_products_wt: '10.00',
+      total_paid: totalTTC_Cmd.toFixed(2), // TTC
+      total_paid_real: idEtat === 2 || idEtat === 5 ? totalTTC_Cmd.toFixed(2) : '0.00',
+      total_products: totalHT_Cmd.toFixed(2), // HT Réel
+      total_products_wt: totalTTC_Cmd.toFixed(2), // TTC Réel
       total_shipping: 0,
       total_shipping_tax_excl: 0,
       total_shipping_tax_incl: 0,
@@ -793,6 +875,30 @@ const lancerImport = async () => {
 
     if (idCmd) {
       resumeImport.value.commandes++
+
+      // FORCER LA DATE ET LE STATUT VIA PUT ET ORDER_HISTORY
+      try {
+        const fullCmdStr = await api.get(`orders/${idCmd}`)
+        const fullCmd = fullCmdStr?.orders || fullCmdStr?.prestashop?.order || fullCmdStr
+        if (fullCmd && fullCmd.id) {
+          const copy = { ...fullCmd }
+          copy.date_add = dateCmd
+          copy.date_upd = dateCmd
+          delete copy.associations
+          await api.put('orders', idCmd, copy)
+        }
+
+        // Ajouter l'historique pour valider l'état 1 ou 2 au lieu du 8 par défaut
+        await api.post('order_histories', {
+          id_order: idCmd,
+          id_order_state: idEtat,
+          date_add: dateCmd,
+          id_employee: 1,
+        })
+      } catch (e) {
+        console.warn('Impossible de forcer la date_add / statut sur la cmd ', idCmd)
+      }
+
       log(
         `  → Commande #${idCmd} créée (état: ${idEtat === 2 ? 'paiement accepté' : 'en attente'})`,
         'succes',
@@ -915,8 +1021,12 @@ const lancerReset = async () => {
     for (const cmd of liste) {
       if (cmd.id_cart) usedCartIds.add(String(cmd.id_cart))
 
-      const r = await api.delete('orders', cmd.id)
-      logR(`Commande #${cmd.id} supprimée`, r !== null ? 'succes' : 'avert')
+      try {
+        const r = await api.delete('orders', cmd.id)
+        logR(`Commande #${cmd.id} supprimée`, r !== null ? 'succes' : 'avert')
+      } catch (e) {
+        logR(`Erreur suppression commande #${cmd.id}`, 'erreur')
+      }
     }
   }
 
@@ -950,7 +1060,9 @@ const lancerReset = async () => {
     const listeA = rawA ? (Array.isArray(rawA) ? rawA : [rawA]) : []
     logR(`${listeA.length} adresse(s) trouvée(s)`)
     for (const adr of listeA) {
-      await api.delete('addresses', adr.id)
+      try {
+        await api.delete('addresses', adr.id)
+      } catch (e) {}
     }
   }
 
@@ -961,8 +1073,12 @@ const lancerReset = async () => {
     const liste = raw ? (Array.isArray(raw) ? raw : [raw]) : []
     logR(`${liste.length} client(s) trouvé(s)`)
     for (const cli of liste) {
-      const r = await api.delete('customers', cli.id)
-      logR(`Client #${cli.id} (${cli.email}) supprimé`, r !== null ? 'succes' : 'avert')
+      try {
+        const r = await api.delete('customers', cli.id)
+        logR(`Client #${cli.id} (${cli.email}) supprimé`, r !== null ? 'succes' : 'avert')
+      } catch (e) {
+        logR(`Erreur suppression client #${cli.id}`, 'erreur')
+      }
     }
   }
 
@@ -975,8 +1091,12 @@ const lancerReset = async () => {
     const aSupprimerCat = listeCat.filter((c) => parseInt(c.id) > 2) // On garde Root (1) et Accueil (2)
     logR(`${aSupprimerCat.length} catégorie(s) à supprimer`)
     for (const cat of aSupprimerCat) {
-      await api.delete('categories', cat.id)
-      logR(`Catégorie #${cat.id} supprimée`, 'succes')
+      try {
+        await api.delete('categories', cat.id)
+        logR(`Catégorie #${cat.id} supprimée`, 'succes')
+      } catch (e) {
+        logR(`Erreur suppression Catégorie #${cat.id}`, 'erreur')
+      }
     }
   }
 
@@ -1010,12 +1130,21 @@ const lancerReset = async () => {
     const liste = raw ? (Array.isArray(raw) ? raw : [raw]) : []
     logR(`${liste.length} produit(s) trouvé(s)`)
     for (const prod of liste) {
-      const r = await api.delete('products', prod.id)
-      logR(`Produit #${prod.id} (${prod.reference}) supprimé`, r !== null ? 'succes' : 'avert')
+      try {
+        const r = await api.delete('products', prod.id)
+        logR(`Produit #${prod.id} (${prod.reference}) supprimé`, r !== null ? 'succes' : 'avert')
+      } catch (e) {
+        logR(`Erreur suppression Produit #${prod.id}`, 'erreur')
+      }
     }
   }
 
   logR('=== Réinitialisation terminée ===', 'succes')
+
+  // VIDER LE LOCAL VUE POUR L'HISTORIQUE DE STOCK
+  db.s('stock_historique', [])
+  logR('Historique de stockage local réinitialisé.', 'succes')
+
   enCoursReset.value = false
   resetTermine.value = true
 }
@@ -1036,7 +1165,7 @@ const lancerReset = async () => {
         <button
           class="btn-reset-ps"
           @click="
-            resetVisible = !resetVisible;
+            resetVisible = !resetVisible
             logReset = [];
           "
         >
@@ -1123,6 +1252,14 @@ const lancerReset = async () => {
                 produit : T_01.jpg, C_03.png...</span
               >
             </div>
+              <div class="radios">
+                <label class="radio"
+                  ><input type="radio" v-model="checker" value="1" />ok</label
+                >
+                <label class="radio"
+                  ><input type="radio" v-model="checker" value="2" />non</label
+                >
+              </div>
             <label class="btn-choisir btn-dossier">
               {{
                 dossierImages.length > 0
@@ -1130,6 +1267,7 @@ const lancerReset = async () => {
                   : 'Choisir le fichier ZIP'
               }}
               <input type="file" accept=".zip" @change="onDossierImages" hidden />
+              <!-- =====ceci est le point d'entre ne l'-->
             </label>
             <div v-if="dossierImages.length > 0" class="images-liste">
               <span v-for="img in dossierImages" :key="img.name" class="img-tag">{{
@@ -1327,7 +1465,7 @@ const lancerReset = async () => {
             class="btn-importer"
             style="margin-top: 12px"
             @click="
-              resetVisible = false;
+              resetVisible = false
               reinitialiser();
             "
           >

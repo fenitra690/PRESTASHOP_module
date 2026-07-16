@@ -5,3 +5,17 @@ P_01,couleur,mainty,5,"23,49"
 P_01,couleur,fotsy,3,"18,99"
 C_03,,,10,
 M_02,,,11,
+
+date,nom,email,pwd,adresse,achat,etat
+09/05/2026,Rakoto,rakoto@yopmail.com,XvzsX5O0!GBD0uXQ,Andoharanofotsy,"[(""T_01"";3;""ngoza"")]",
+16/04/2026,Rajao,rajao1970@yopmail.com,BAC?UoxjQIW;Na8ix,Analakely,"[(""T_01"";2;""kely""),(""C_03"";1;"""")]",paiement accepté
+07/05/2026,Rakoto,rakoto@yopmail.com,XvzsX5O0!GBD0uXQ,Andoharanofotsy,"[(""T_01"";1;""kely"")]",paiement accepté
+08/05/2026,Rakoto,rakoto@yopmail.com,XvzsX5O0!GBD0uXQ,Andoharanofotsy,"[(""T_01"";4;""kely"")]",livré
+17/04/2026,Rajao,rajao1970@yopmail.com,BAC?UoxjQIW;Na8ix,Analakely,"[(""T_01"";2;""kely""),(""C_03"";1;"""")]",annulé
+
+date_availability_produit,nom,reference,prix_ttc,Taxe,categorie,prix_achat
+01/12/2025,Tshirt,T_01,"12,5","11,65%",Akanjo,"8,5"
+02/05/2026,Pantalon,P_01,"18,99","11,65%",Akanjo,"14,33"
+08/05/2026,Casquette,C_03,5,"5,60%",Accessoire,2
+08/05/2026,Montre,M_02,56,"5,60%",Accessoire,40
+
