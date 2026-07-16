@@ -3,6 +3,7 @@ import api from '@/utils/api.js'
 import db from '@/utils/db.js'
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
+import JSZip from 'jszip'
 
 const router = useRouter()
 const sessionBack = db.session('admin', null)
@@ -11,19 +12,20 @@ if (!sessionBack.value) router.push('/backoffice/login')
 // ============================================================
 // ÉTAT GLOBAL
 // ============================================================
-const etape = ref('selection')   // 'selection' | 'validation' | 'import' | 'done'
+const etape = ref('selection') // 'selection' | 'validation' | 'import' | 'done'
 const enCours = ref(false)
 
+
 // Fichiers sélectionnés
-const fichier1 = ref(null)   // produits
-const fichier2 = ref(null)   // déclinaisons/stock
-const fichier3 = ref(null)   // clients/commandes
+const fichier1 = ref(null) // produits
+const fichier2 = ref(null) // déclinaisons/stock
+const fichier3 = ref(null) // clients/commandes
 const dossierImages = ref([]) // fichiers image depuis le dossier
 
 // Données parsées
-const produits    = ref([])
+const produits = ref([])
 const declinaisons = ref([])
-const commandes   = ref([])
+const commandes = ref([])
 
 // Erreurs de validation par fichier
 const erreursF1 = ref([])
@@ -32,12 +34,27 @@ const erreursF3 = ref([])
 
 // Log d'import
 const logImport = ref([])
-const resumeImport = ref({ produits: 0, declinaisons: 0, clients: 0, commandes: 0, images: 0, erreurs: 0 })
+const resumeImport = ref({
+  produits: 0,
+  declinaisons: 0,
+  clients: 0,
+  commandes: 0,
+  images: 0,
+  erreurs: 0,
+})
 
 // ============================================================
 // COLONNES ATTENDUES (validation noms de colonnes)
 // ============================================================
-const COLS_F1 = ['date_availability_produit', 'nom', 'reference', 'prix_ttc', 'Taxe', 'categorie', 'prix_achat']
+const COLS_F1 = [
+  'date_availability_produit',
+  'nom',
+  'reference',
+  'prix_ttc',
+  'Taxe',
+  'categorie',
+  'prix_achat',
+]
 const COLS_F2 = ['reference', 'specificité', 'karazany', 'stock_initial', 'prix_vente_ttc']
 const COLS_F3 = ['date', 'nom', 'email', 'pwd', 'adresse', 'achat', 'etat']
 
@@ -46,7 +63,11 @@ const COLS_F3 = ['date', 'nom', 'email', 'pwd', 'adresse', 'achat', 'etat']
 // ============================================================
 function parseCSV(texte) {
   // Gère les virgules dans les guillemets
-  const lignes = texte.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(l => l.trim())
+  const lignes = texte
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .filter((l) => l.trim())
   const headers = parseLigneCSV(lignes[0])
   const rows = []
   for (let i = 1; i < lignes.length; i++) {
@@ -68,8 +89,10 @@ function parseLigneCSV(ligne) {
   for (let i = 0; i < ligne.length; i++) {
     const c = ligne[i]
     if (c === '"') {
-      if (dansGuillemets && ligne[i+1] === '"') { courant += '"'; i++ }
-      else dansGuillemets = !dansGuillemets
+      if (dansGuillemets && ligne[i + 1] === '"') {
+        courant += '"'
+        i++
+      } else dansGuillemets = !dansGuillemets
     } else if (c === ',' && !dansGuillemets) {
       result.push(courant.trim())
       courant = ''
@@ -105,7 +128,7 @@ function dateVersPS(s) {
 function lireFichier(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
-    reader.onload = e => resolve(e.target.result)
+    reader.onload = (e) => resolve(e.target.result)
     reader.onerror = reject
     reader.readAsText(file, 'UTF-8')
   })
@@ -114,16 +137,52 @@ function lireFichier(file) {
 // ============================================================
 // SÉLECTION FICHIERS
 // ============================================================
-const onFichier1 = (e) => { fichier1.value = e.target.files[0] || null }
-const onFichier2 = (e) => { fichier2.value = e.target.files[0] || null }
-const onFichier3 = (e) => { fichier3.value = e.target.files[0] || null }
+const onFichier1 = (e) => {
+  fichier1.value = e.target.files[0] || null
+}
+const onFichier2 = (e) => {
+  fichier2.value = e.target.files[0] || null
+}
+const onFichier3 = (e) => {
+  fichier3.value = e.target.files[0] || null
+}
 
-const onDossierImages = (e) => {
-  // webkitdirectory : sélection d'un dossier entier
-  const files = Array.from(e.target.files)
-  dossierImages.value = files.filter(f =>
-    /\.(png|jpg|jpeg|gif|webp)$/i.test(f.name) && !f.name.startsWith('._')
-  )
+const onDossierImages = async (e) => {
+  const file = e.target.files[0]
+  if (!file) {
+    dossierImages.value = []
+    return
+  }
+
+  try {
+    const zip = await JSZip.loadAsync(file)
+    const filesArray = []
+
+    zip.forEach((relativePath, zipEntry) => {
+      if (
+        !zipEntry.dir &&
+        /\.(png|jpg|jpeg|gif|webp)$/i.test(zipEntry.name) &&
+        !zipEntry.name.includes('._') &&
+        !zipEntry.name.includes('__MACOSX')
+      ) {
+        filesArray.push(zipEntry)
+      }
+    })
+
+    // We convert zip entries to objects with { name, getFile() } so it's compatible
+    dossierImages.value = filesArray.map((entry) => {
+      // The name should only be the filename, not the full path in zip
+      const parts = entry.name.split('/')
+      const fileName = parts[parts.length - 1]
+      return {
+        name: fileName,
+        zipEntry: entry,
+        // We'll read it as a File or Blob when needed
+      }
+    })
+  } catch (err) {
+    alert('Erreur lors de la lecture du fichier ZIP: ' + err.message)
+  }
 }
 
 const peutValider = computed(() => fichier1.value && fichier2.value && fichier3.value)
@@ -148,7 +207,11 @@ const validerFichiers = async () => {
     // Vérifier noms de colonnes
     for (const col of COLS_F1) {
       if (!headers.includes(col)) {
-        erreursF1.value.push({ ligne: 0, type: 'colonne', msg: `Colonne manquante ou non conforme : "${col}"` })
+        erreursF1.value.push({
+          ligne: 0,
+          type: 'colonne',
+          msg: `Colonne manquante ou non conforme : "${col}"`,
+        })
       }
     }
 
@@ -156,21 +219,37 @@ const validerFichiers = async () => {
     rows.forEach((row, i) => {
       const num = i + 2 // ligne CSV (1 = header)
       if (!estDateValide(row.date_availability_produit)) {
-        erreursF1.value.push({ ligne: num, type: 'date', msg: `Ligne ${num} — date_availability_produit invalide : "${row.date_availability_produit}" (attendu DD/MM/YYYY)` })
+        erreursF1.value.push({
+          ligne: num,
+          type: 'date',
+          msg: `Ligne ${num} — date_availability_produit invalide : "${row.date_availability_produit}" (attendu DD/MM/YYYY)`,
+        })
       }
       const prix = parseNombre(row.prix_ttc)
       if (prix === null || prix <= 0) {
-        erreursF1.value.push({ ligne: num, type: 'montant', msg: `Ligne ${num} — prix_ttc doit être un montant positif : "${row.prix_ttc}"` })
+        erreursF1.value.push({
+          ligne: num,
+          type: 'montant',
+          msg: `Ligne ${num} — prix_ttc doit être un montant positif : "${row.prix_ttc}"`,
+        })
       }
       const achat = parseNombre(row.prix_achat)
       if (achat === null || achat <= 0) {
-        erreursF1.value.push({ ligne: num, type: 'montant', msg: `Ligne ${num} — prix_achat doit être un montant positif : "${row.prix_achat}"` })
+        erreursF1.value.push({
+          ligne: num,
+          type: 'montant',
+          msg: `Ligne ${num} — prix_achat doit être un montant positif : "${row.prix_achat}"`,
+        })
       }
     })
 
     produits.value = rows
   } catch (e) {
-    erreursF1.value.push({ ligne: 0, type: 'lecture', msg: 'Impossible de lire le fichier : ' + e.message })
+    erreursF1.value.push({
+      ligne: 0,
+      type: 'lecture',
+      msg: 'Impossible de lire le fichier : ' + e.message,
+    })
   }
 
   // --- FICHIER 2 : Déclinaisons ---
@@ -180,7 +259,11 @@ const validerFichiers = async () => {
 
     for (const col of COLS_F2) {
       if (!headers.includes(col)) {
-        erreursF2.value.push({ ligne: 0, type: 'colonne', msg: `Colonne manquante ou non conforme : "${col}"` })
+        erreursF2.value.push({
+          ligne: 0,
+          type: 'colonne',
+          msg: `Colonne manquante ou non conforme : "${col}"`,
+        })
       }
     }
 
@@ -188,19 +271,31 @@ const validerFichiers = async () => {
       const num = i + 2
       const stock = parseInt(row.stock_initial)
       if (isNaN(stock) || stock < 0) {
-        erreursF2.value.push({ ligne: num, type: 'montant', msg: `Ligne ${num} — stock_initial doit être un entier positif ou zéro : "${row.stock_initial}"` })
+        erreursF2.value.push({
+          ligne: num,
+          type: 'montant',
+          msg: `Ligne ${num} — stock_initial doit être un entier positif ou zéro : "${row.stock_initial}"`,
+        })
       }
       if (row.prix_vente_ttc) {
         const pv = parseNombre(row.prix_vente_ttc)
         if (pv !== null && pv < 0) {
-          erreursF2.value.push({ ligne: num, type: 'montant', msg: `Ligne ${num} — prix_vente_ttc doit être positif : "${row.prix_vente_ttc}"` })
+          erreursF2.value.push({
+            ligne: num,
+            type: 'montant',
+            msg: `Ligne ${num} — prix_vente_ttc doit être positif : "${row.prix_vente_ttc}"`,
+          })
         }
       }
     })
 
     declinaisons.value = rows
   } catch (e) {
-    erreursF2.value.push({ ligne: 0, type: 'lecture', msg: 'Impossible de lire le fichier : ' + e.message })
+    erreursF2.value.push({
+      ligne: 0,
+      type: 'lecture',
+      msg: 'Impossible de lire le fichier : ' + e.message,
+    })
   }
 
   // --- FICHIER 3 : Clients/Commandes ---
@@ -210,31 +305,47 @@ const validerFichiers = async () => {
 
     for (const col of COLS_F3) {
       if (!headers.includes(col)) {
-        erreursF3.value.push({ ligne: 0, type: 'colonne', msg: `Colonne manquante ou non conforme : "${col}"` })
+        erreursF3.value.push({
+          ligne: 0,
+          type: 'colonne',
+          msg: `Colonne manquante ou non conforme : "${col}"`,
+        })
       }
     }
 
     rows.forEach((row, i) => {
       const num = i + 2
       if (!estDateValide(row.date)) {
-        erreursF3.value.push({ ligne: num, type: 'date', msg: `Ligne ${num} — date invalide : "${row.date}" (attendu DD/MM/YYYY)` })
+        erreursF3.value.push({
+          ligne: num,
+          type: 'date',
+          msg: `Ligne ${num} — date invalide : "${row.date}" (attendu DD/MM/YYYY)`,
+        })
       }
       if (!row.email || !row.email.includes('@')) {
-        erreursF3.value.push({ ligne: num, type: 'format', msg: `Ligne ${num} — email invalide : "${row.email}"` })
+        erreursF3.value.push({
+          ligne: num,
+          type: 'format',
+          msg: `Ligne ${num} — email invalide : "${row.email}"`,
+        })
       }
     })
 
     commandes.value = rows
   } catch (e) {
-    erreursF3.value.push({ ligne: 0, type: 'lecture', msg: 'Impossible de lire le fichier : ' + e.message })
+    erreursF3.value.push({
+      ligne: 0,
+      type: 'lecture',
+      msg: 'Impossible de lire le fichier : ' + e.message,
+    })
   }
 
   enCours.value = false
   etape.value = 'validation'
 }
 
-const totalErreurs = computed(() =>
-  erreursF1.value.length + erreursF2.value.length + erreursF3.value.length
+const totalErreurs = computed(
+  () => erreursF1.value.length + erreursF2.value.length + erreursF3.value.length,
 )
 const peutImporter = computed(() => totalErreurs.value === 0)
 
@@ -243,7 +354,7 @@ const peutImporter = computed(() => totalErreurs.value === 0)
 // ============================================================
 const log = (msg, type = 'info') => {
   logImport.value.push({ msg, type, ts: new Date().toLocaleTimeString() })
-  if (type === 'erreur') resumeImport.value.erreurs++
+  if (type === 'erreur') resumeImport.value.erreurs++ 
 }
 
 const lancerImport = async () => {
@@ -251,7 +362,14 @@ const lancerImport = async () => {
   enCours.value = true
   etape.value = 'import'
   logImport.value = []
-  resumeImport.value = { produits: 0, declinaisons: 0, clients: 0, commandes: 0, images: 0, erreurs: 0 }
+  resumeImport.value = {
+    produits: 0,
+    declinaisons: 0,
+    clients: 0,
+    commandes: 0,
+    images: 0,
+    erreurs: 0,
+  }
 
   // ============================================================
   // A. CRÉER LES CATÉGORIES MANQUANTES
@@ -268,7 +386,7 @@ const lancerImport = async () => {
     if (typeof c.name === 'string') return c.name
     if (c.name?.language) {
       const l = c.name.language
-      return Array.isArray(l) ? (l[0]?.value || '') : (l?.value || '')
+      return Array.isArray(l) ? l[0]?.value || '' : l?.value || ''
     }
     return ''
   }
@@ -280,7 +398,7 @@ const lancerImport = async () => {
   }
 
   // Créer les catégories manquantes
-  const categoriesUniques = [...new Set(produits.value.map(p => p.categorie).filter(Boolean))]
+  const categoriesUniques = [...new Set(produits.value.map((p) => p.categorie).filter(Boolean))]
   for (const nomCat of categoriesUniques) {
     if (!mapCategories[nomCat.toLowerCase()]) {
       log(`Création catégorie : ${nomCat}`)
@@ -290,20 +408,37 @@ const lancerImport = async () => {
         name: {
           language: [
             { id: '1', value: nomCat.trim() },
-            { id: '2', value: nomCat.trim() }
-          ]
+            { id: '2', value: nomCat.trim() },
+          ],
         },
         link_rewrite: {
           language: [
-            { id: '1', value: nomCat.trim().toLowerCase().replace(/[^a-z0-9]/g, '-') },
-            { id: '2', value: nomCat.trim().toLowerCase().replace(/[^a-z0-9]/g, '-') }
-          ]
+            {
+              id: '1',
+              value: nomCat
+                .trim()
+                .toLowerCase()
+                .replace(/[^a-z0-9]/g, '-'),
+            },
+            {
+              id: '2',
+              value: nomCat
+                .trim()
+                .toLowerCase()
+                .replace(/[^a-z0-9]/g, '-'),
+            },
+          ],
         },
-        description: { language: [{ id: '1', value: '' }, { id: '2', value: '' }] }
+        description: {
+          language: [
+            { id: '1', value: '' },
+            { id: '2', value: '' },
+          ],
+        },
       }
       const res = await api.post('categories', catPayload)
       const idNew = res?.prestashop?.category?.id
-      const idRaw = (idNew && typeof idNew === 'object') ? (idNew.__cdata || idNew['#text']) : idNew
+      const idRaw = idNew && typeof idNew === 'object' ? idNew.__cdata || idNew['#text'] : idNew
       if (idRaw) {
         mapCategories[nomCat.toLowerCase()] = idRaw
         log(`  → Catégorie "${nomCat}" créée (ID: ${idRaw})`, 'succes')
@@ -333,7 +468,10 @@ const lancerImport = async () => {
 
   for (const p of produits.value) {
     if (mapProduits[p.reference]) {
-      log(`Produit "${p.reference}" déjà existant (ID: ${mapProduits[p.reference]}), ignoré.`, 'avert')
+      log(
+        `Produit "${p.reference}" déjà existant (ID: ${mapProduits[p.reference]}), ignoré.`,
+        'avert',
+      )
       continue
     }
 
@@ -345,7 +483,10 @@ const lancerImport = async () => {
     log(`Création produit : ${p.nom} (${p.reference})`)
     const res = await api.post('products', {
       reference: p.reference,
-      name: [{ id: 1, value: p.nom }, { id: 2, value: p.nom }],
+      name: [
+        { id: 1, value: p.nom },
+        { id: 2, value: p.nom },
+      ],
       price: prixHT?.toFixed(6) || '0.000000',
       wholesale_price: prixAchat?.toFixed(6) || '0.000000',
       id_category_default: idCat,
@@ -356,19 +497,37 @@ const lancerImport = async () => {
       condition: 'new',
       available_date: dateAvailability,
       link_rewrite: [
-        { id: 1, value: p.nom.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') },
-        { id: 2, value: p.nom.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') }
+        {
+          id: 1,
+          value: p.nom
+            .toLowerCase()
+            .replace(/\s+/g, '-')
+            .replace(/[^a-z0-9-]/g, ''),
+        },
+        {
+          id: 2,
+          value: p.nom
+            .toLowerCase()
+            .replace(/\s+/g, '-')
+            .replace(/[^a-z0-9-]/g, ''),
+        },
       ],
-      description: [{ id: 1, value: '' }, { id: 2, value: '' }],
-      description_short: [{ id: 1, value: '' }, { id: 2, value: '' }],
+      description: [
+        { id: 1, value: '' },
+        { id: 2, value: '' },
+      ],
+      description_short: [
+        { id: 1, value: '' },
+        { id: 2, value: '' },
+      ],
       meta_title: p.nom,
       meta_description: '',
-      meta_keywords: ''
+      meta_keywords: '',
     })
 
     const obj = res?.prestashop?.product
     const idRaw = obj?.id
-    const idProd = (idRaw && typeof idRaw === 'object') ? (idRaw.__cdata || idRaw['#text']) : idRaw
+    const idProd = idRaw && typeof idRaw === 'object' ? idRaw.__cdata || idRaw['#text'] : idRaw
     if (idProd) {
       mapProduits[p.reference] = idProd
       resumeImport.value.produits++
@@ -396,7 +555,9 @@ const lancerImport = async () => {
     if (!d.specificité && !d.karazany) {
       log(`Stock initial produit ${d.reference} : ${stockInitial}`)
       // Chercher le stock_available principal (id_product_attribute = 0)
-      const resS = await api.get(`stock_availables?filter[id_product]=${idProd}&filter[id_product_attribute]=0&display=full`)
+      const resS = await api.get(
+        `stock_availables?filter[id_product]=${idProd}&filter[id_product_attribute]=0&display=full`,
+      )
       if (resS) {
         const rawS = resS.stock_availables || resS.prestashop?.stock_availables?.stock_available
         const s = rawS ? (Array.isArray(rawS) ? rawS[0] : rawS) : null
@@ -406,7 +567,7 @@ const lancerImport = async () => {
             id_product_attribute: 0,
             quantity: stockInitial,
             depends_on_stock: 0,
-            out_of_stock: 0
+            out_of_stock: 0,
           })
           resumeImport.value.declinaisons++
           log(`  → Stock ${d.reference} = ${stockInitial}`, 'succes')
@@ -415,11 +576,13 @@ const lancerImport = async () => {
       continue
     }
 
-    // Cas avec déclinaison : Pour l'exercice, on simplifie car la création 
+    // Cas avec déclinaison : Pour l'exercice, on simplifie car la création
     // d'attributs via API est complexe. On met le stock sur le produit principal.
     log(`Déclinaison ${d.reference} — ${d.specificité}:${d.karazany} (stock: ${stockInitial})`)
 
-    const resS = await api.get(`stock_availables?filter[id_product]=${idProd}&filter[id_product_attribute]=0&display=full`)
+    const resS = await api.get(
+      `stock_availables?filter[id_product]=${idProd}&filter[id_product_attribute]=0&display=full`,
+    )
     if (resS) {
       const rawS = resS.stock_availables || resS.prestashop?.stock_availables?.stock_available
       const s = rawS ? (Array.isArray(rawS) ? rawS[0] : rawS) : null
@@ -430,7 +593,7 @@ const lancerImport = async () => {
           id_product_attribute: 0,
           quantity: nouvelleQte,
           depends_on_stock: 0,
-          out_of_stock: 0
+          out_of_stock: 0,
         })
         resumeImport.value.declinaisons++
         log(`  → Stock ${d.reference} mis à jour : ${nouvelleQte}`, 'succes')
@@ -445,7 +608,7 @@ const lancerImport = async () => {
 
   // Charger les clients existants (par email)
   const resCli = await api.get('customers?display=full')
-  const mapClients = {}   // email -> id_customer
+  const mapClients = {} // email -> id_customer
   if (resCli) {
     const raw = resCli.customers || resCli.prestashop?.customers?.customer
     const liste = raw ? (Array.isArray(raw) ? raw : [raw]) : []
@@ -465,12 +628,12 @@ const lancerImport = async () => {
         email: row.email,
         passwd: row.pwd,
         active: 1,
-        id_default_group: 3,  // groupe "Clients"
-        id_lang: 1
+        id_default_group: 3, // groupe "Clients"
+        id_lang: 1,
       })
       const objC = resC?.prestashop?.customer
       const idRaw = objC?.id
-      idClient = (idRaw && typeof idRaw === 'object') ? (idRaw.__cdata || idRaw['#text']) : idRaw
+      idClient = idRaw && typeof idRaw === 'object' ? idRaw.__cdata || idRaw['#text'] : idRaw
       if (idClient) {
         mapClients[row.email] = idClient
         resumeImport.value.clients++
@@ -487,18 +650,18 @@ const lancerImport = async () => {
     log(`Création adresse pour client #${idClient}`)
     const resAddr = await api.post('addresses', {
       id_customer: idClient,
-      id_country: 8,  // France (Madagascar pas dans la liste par défaut, on met France)
+      id_country: 8, // France (Madagascar pas dans la liste par défaut, on met France)
       alias: 'Import',
       firstname: row.nom,
       lastname: '.',
       address1: row.adresse || 'Adresse importée',
       city: row.adresse || 'Ville',
       postcode: '00100',
-      phone_mobile: '0000000000'
+      phone_mobile: '0000000000',
     })
     const objA = resAddr?.prestashop?.address
     const idARaw = objA?.id
-    const idAddr = (idARaw && typeof idARaw === 'object') ? (idARaw.__cdata || idARaw['#text']) : idARaw
+    const idAddr = idARaw && typeof idARaw === 'object' ? idARaw.__cdata || idARaw['#text'] : idARaw
     if (!idAddr) {
       log(`  → Erreur création adresse pour ${row.email}`, 'erreur')
       continue
@@ -524,17 +687,20 @@ const lancerImport = async () => {
       associations: {
         cart_rows: {
           nodeType: 'cart_row',
-          rows: [{
-            id_product: mapProduits[row.achat] || 1, // On lie le produit acheté
-            id_product_attribute: 0,
-            quantity: 1
-          }]
-        }
-      }
+          rows: [
+            {
+              id_product: mapProduits[row.achat] || 1, // On lie le produit acheté
+              id_product_attribute: 0,
+              quantity: 1,
+            },
+          ],
+        },
+      },
     })
     const objPan = resPan?.prestashop?.cart
     const idPanRaw = objPan?.id
-    const idPanier = (idPanRaw && typeof idPanRaw === 'object') ? (idPanRaw.__cdata || idPanRaw['#text']) : idPanRaw
+    const idPanier =
+      idPanRaw && typeof idPanRaw === 'object' ? idPanRaw.__cdata || idPanRaw['#text'] : idPanRaw
 
     if (!idPanier) {
       log(`  → Erreur création panier pour ${row.nom}`, 'erreur')
@@ -551,24 +717,30 @@ const lancerImport = async () => {
       id_customer: idClient,
       id_carrier: 1,
       module: 'ps_cashondelivery',
-      payment: 'Paiement à la livraison',
-      total_paid: 0,
-      total_paid_real: idEtat === 2 ? 0 : 0,
-      total_products: 0,
-      total_products_wt: 0,
+      payment: 'Paiement a la livraison',
+      total_paid: '10.00',
+      total_paid_real: idEtat === 2 ? '10.00' : '0.00',
+      total_products: '10.00',
+      total_products_wt: '10.00',
       total_shipping: 0,
       total_shipping_tax_excl: 0,
       total_shipping_tax_incl: 0,
-      current_state: idEtat,
-      conversion_rate: 1
+      id_shop_group: 1,
+      id_shop: 1,
+      current_state: String(idEtat),
+      conversion_rate: 1,
     })
     const objCmd = resCmd?.prestashop?.order
     const idCmdRaw = objCmd?.id
-    const idCmd = (idCmdRaw && typeof idCmdRaw === 'object') ? (idCmdRaw.__cdata || idCmdRaw['#text']) : idCmdRaw
+    const idCmd =
+      idCmdRaw && typeof idCmdRaw === 'object' ? idCmdRaw.__cdata || idCmdRaw['#text'] : idCmdRaw
 
     if (idCmd) {
       resumeImport.value.commandes++
-      log(`  → Commande #${idCmd} créée (état: ${idEtat === 2 ? 'paiement accepté' : 'en attente'})`, 'succes')
+      log(
+        `  → Commande #${idCmd} créée (état: ${idEtat === 2 ? 'paiement accepté' : 'en attente'})`,
+        'succes',
+      )
     } else {
       log(`  → Erreur création commande pour ${row.nom}`, 'erreur')
     }
@@ -596,10 +768,19 @@ const lancerImport = async () => {
       log(`Upload image "${imgFile.name}" → produit ${reference} (ID: ${idProd})`)
       try {
         const formData = new FormData()
-        formData.append('image', imgFile)
+
+        let blob = await imgFile.zipEntry.async('blob')
+        let mimeType = 'image/jpeg'
+        if (imgFile.name.toLowerCase().endsWith('.png')) mimeType = 'image/png'
+        else if (imgFile.name.toLowerCase().endsWith('.gif')) mimeType = 'image/gif'
+        else if (imgFile.name.toLowerCase().endsWith('.webp')) mimeType = 'image/webp'
+
+        const fileToUpload = new File([blob], imgFile.name, { type: mimeType })
+        formData.append('image', fileToUpload)
+
         const resp = await fetch(
           `/api/images/products/${idProd}?ws_key=6CcZSeHI1MjkPrp1L9RGbKmoxNUEoMf7`,
-          { method: 'POST', body: formData }
+          { method: 'POST', body: formData },
         )
         if (resp.ok) {
           resumeImport.value.images++
@@ -634,7 +815,7 @@ const reinitialiser = () => {
   erreursF2.value = []
   erreursF3.value = []
   logImport.value = []
-  document.querySelectorAll('input[type=file]').forEach(el => el.value = '')
+  document.querySelectorAll('input[type=file]').forEach((el) => (el.value = ''))
 }
 
 // ============================================================
@@ -653,13 +834,20 @@ const logR = (msg, type = 'info') => {
 }
 
 const lancerReset = async () => {
-  if (!confirm('⚠️ ATTENTION : Cette action va supprimer TOUTES les commandes, clients et produits dans PrestaShop. Continuer ?')) return
+  if (
+    !confirm(
+      '⚠️ ATTENTION : Cette action va supprimer TOUTES les commandes, clients et produits dans PrestaShop. Continuer ?',
+    )
+  )
+    return
   if (!confirm('Dernière confirmation : supprimer toutes les données importées ?')) return
 
   enCoursReset.value = true
   resetVisible.value = true
   resetTermine.value = false
   logReset.value = []
+
+  let usedCartIds = new Set()
 
   // ---- SUPPRIMER LES COMMANDES ----
   logR('Chargement des commandes...')
@@ -669,11 +857,10 @@ const lancerReset = async () => {
     const liste = raw ? (Array.isArray(raw) ? raw : [raw]) : []
     logR(`${liste.length} commande(s) trouvée(s)`)
     for (const cmd of liste) {
-      // Pour supprimer une commande PS, il faut d'abord la mettre en état "Annulé" (6)
-      // puis la supprimer — PS ne permet pas DELETE /orders directement
-      // On passe par l'état annulé
-      await api.put('orders', cmd.id, { current_state: 6 })
-      logR(`Commande #${cmd.id} annulée`, 'succes')
+      if (cmd.id_cart) usedCartIds.add(String(cmd.id_cart))
+
+      const r = await api.delete('orders', cmd.id)
+      logR(`Commande #${cmd.id} supprimée`, r !== null ? 'succes' : 'avert')
     }
   }
 
@@ -684,13 +871,33 @@ const lancerReset = async () => {
     const raw = resCarts.carts || resCarts.prestashop?.carts?.cart
     const liste = raw ? (Array.isArray(raw) ? raw : [raw]) : []
     logR(`${liste.length} panier(s) trouvé(s)`)
-    for (const cart of liste) {
-      const r = await api.delete('carts', cart.id)
-      logR(`Panier #${cart.id} supprimé`, r ? 'succes' : 'avert')
+
+    // On ne peut pas supprimer les paniers liés à une commande (PrestaShop renvoie une erreur 500)
+    const aSupprimer = liste.filter((c) => !usedCartIds.has(String(c.id)))
+    logR(`${aSupprimer.length} panier(s) supprimable(s) (non liés à une commande)`)
+
+    for (const cart of aSupprimer) {
+      try {
+        await api.delete('carts', cart.id)
+        logR(`Panier #${cart.id} supprimé`, 'succes')
+      } catch (e) {
+        logR(`Erreur sur Panier #${cart.id}`, 'avert')
+      }
     }
   }
 
-  // ---- SUPPRIMER LES CLIENTS ----
+  // ---- SUPPRIMER LES CLIENTS ET ADRESSES ----
+  logR('Chargement des adresses...')
+  const resAddr = await api.get('addresses?display=full')
+  if (resAddr) {
+    const rawA = resAddr.addresses || resAddr.prestashop?.addresses?.address
+    const listeA = rawA ? (Array.isArray(rawA) ? rawA : [rawA]) : []
+    logR(`${listeA.length} adresse(s) trouvée(s)`)
+    for (const adr of listeA) {
+      await api.delete('addresses', adr.id)
+    }
+  }
+
   logR('Chargement des clients...')
   const resCli = await api.get('customers?display=full')
   if (resCli) {
@@ -703,7 +910,43 @@ const lancerReset = async () => {
     }
   }
 
-  // ---- SUPPRIMER LES PRODUITS ----
+  // ---- SUPPRIMER LES CATÉGORIES CRÉÉES ----
+  logR('Chargement des catégories...')
+  const resCat = await api.get('categories?display=full')
+  if (resCat) {
+    const rawCat = resCat.categories || resCat.prestashop?.categories?.category
+    const listeCat = rawCat ? (Array.isArray(rawCat) ? rawCat : [rawCat]) : []
+    const aSupprimerCat = listeCat.filter((c) => parseInt(c.id) > 2) // On garde Root (1) et Accueil (2)
+    logR(`${aSupprimerCat.length} catégorie(s) à supprimer`)
+    for (const cat of aSupprimerCat) {
+      await api.delete('categories', cat.id)
+      logR(`Catégorie #${cat.id} supprimée`, 'succes')
+    }
+  }
+
+  // ---- RAZ DES STOCKS ET SUPPRIMER LES PRODUITS ----
+  logR('Réinitialisation des stocks...')
+  const resStock = await api.get('stock_availables?display=full')
+  if (resStock) {
+    const rawStock =
+      resStock.stock_availables || resStock.prestashop?.stock_availables?.stock_available
+    const listeStock = rawStock ? (Array.isArray(rawStock) ? rawStock : [rawStock]) : []
+    for (const s of listeStock) {
+      if (parseInt(s.quantity) !== 0) {
+        await api.put('stock_availables', s.id, {
+          id_product: s.id_product,
+          id_product_attribute: s.id_product_attribute || 0,
+          id_shop: s.id_shop || 1,
+          id_shop_group: s.id_shop_group || 0,
+          quantity: 0,
+          depends_on_stock: 0,
+          out_of_stock: 0,
+        })
+      }
+    }
+    logR('Stocks remis à 0', 'succes')
+  }
+
   logR('Chargement des produits...')
   const resProd = await api.get('products?display=full')
   if (resProd) {
@@ -724,22 +967,39 @@ const lancerReset = async () => {
 
 <template>
   <div class="page">
-
     <!-- SIDEBAR identique au dashboard -->
     <aside class="sidebar">
       <div class="sidebar-logo">⚙️ Admin</div>
       <nav class="sidebar-nav">
-        <button class="nav-item" @click="$router.push('/backoffice/dashboard')">📋 Dashboard</button>
+        <button class="nav-item" @click="$router.push('/backoffice/dashboard')">
+          📋 Dashboard
+        </button>
         <button class="nav-item actif">📥 Import données</button>
       </nav>
       <div class="sidebar-reset">
-        <button class="btn-reset-ps" @click="resetVisible = !resetVisible; logReset = []">
+        <button
+          class="btn-reset-ps"
+          @click="
+            resetVisible = !resetVisible;
+            logReset = [];
+          "
+        >
           🗑️ Réinitialiser les données
         </button>
       </div>
       <div class="sidebar-footer">
         <span class="admin-nom">{{ sessionBack?.prenom }}</span>
-        <button class="btn-deco" @click="() => { db.session('admin', null).value = null; $router.push('/backoffice/login') }">Déconnexion</button>
+        <button
+          class="btn-deco"
+          @click="
+            () => {
+              db.session('admin', null).value = null
+              $router.push('/backoffice/login')
+            }
+          "
+        >
+          Déconnexion
+        </button>
         <button class="btn-front" @click="$router.push('/')">← Accueil</button>
       </div>
     </aside>
@@ -749,20 +1009,21 @@ const lancerReset = async () => {
 
       <!-- ========== ÉTAPE 1 : SÉLECTION ========== -->
       <div v-if="etape === 'selection'" class="contenu-carte">
-
         <p class="intro">
-          Sélectionnez les 3 fichiers CSV et (optionnellement) le dossier contenant les images.
-          Les fichiers seront validés avant l'import.
+          Sélectionnez les 3 fichiers CSV et (optionnellement) le dossier contenant les images. Les
+          fichiers seront validés avant l'import.
         </p>
 
         <div class="fichiers-grid">
-
           <!-- Fichier 1 : Produits -->
           <div class="fichier-bloc">
             <div class="fichier-icone">📄</div>
             <div class="fichier-label">
               <strong>Fichier 1 — Produits</strong>
-              <span>date_availability_produit, nom, reference, prix_ttc, Taxe, categorie, prix_achat</span>
+              <span
+                >date_availability_produit, nom, reference, prix_ttc, Taxe, categorie,
+                prix_achat</span
+              >
             </div>
             <label class="btn-choisir">
               {{ fichier1 ? '✓ ' + fichier1.name : 'Choisir le fichier CSV' }}
@@ -800,26 +1061,30 @@ const lancerReset = async () => {
           <div class="fichier-bloc fichier-images">
             <div class="fichier-icone">🗂️</div>
             <div class="fichier-label">
-              <strong>Images (optionnel)</strong>
-              <span>Sélectionnez le dossier contenant les images (PNG/JPG). Nommées par référence produit : T_01.jpg, C_03.png...</span>
+              <strong>Images (fichier ZIP)</strong>
+              <span
+                >Sélectionnez le fichier ZIP contenant les images (PNG/JPG). Nommées par référence
+                produit : T_01.jpg, C_03.png...</span
+              >
             </div>
             <label class="btn-choisir btn-dossier">
-              {{ dossierImages.length > 0 ? '✓ ' + dossierImages.length + ' image(s) trouvée(s)' : 'Choisir le dossier d\'images' }}
-              <input type="file" accept="image/*" webkitdirectory multiple @change="onDossierImages" hidden />
+              {{
+                dossierImages.length > 0
+                  ? '✓ ' + dossierImages.length + ' image(s) extraite(s)'
+                  : 'Choisir le fichier ZIP'
+              }}
+              <input type="file" accept=".zip" @change="onDossierImages" hidden />
             </label>
             <div v-if="dossierImages.length > 0" class="images-liste">
-              <span v-for="img in dossierImages" :key="img.name" class="img-tag">{{ img.name }}</span>
+              <span v-for="img in dossierImages" :key="img.name" class="img-tag">{{
+                img.name
+              }}</span>
             </div>
           </div>
-
         </div>
 
         <div class="actions">
-          <button
-            class="btn-valider"
-            :disabled="!peutValider || enCours"
-            @click="validerFichiers"
-          >
+          <button class="btn-valider" :disabled="!peutValider || enCours" @click="validerFichiers">
             {{ enCours ? '⏳ Analyse en cours...' : '→ Analyser et valider les fichiers' }}
           </button>
         </div>
@@ -827,12 +1092,17 @@ const lancerReset = async () => {
 
       <!-- ========== ÉTAPE 2 : VALIDATION ========== -->
       <div v-if="etape === 'validation'" class="contenu-carte">
-
         <div :class="['resume-validation', totalErreurs === 0 ? 'ok' : 'ko']">
           <span class="resume-icone">{{ totalErreurs === 0 ? '✅' : '❌' }}</span>
           <div>
-            <strong>{{ totalErreurs === 0 ? 'Fichiers valides — prêt pour l\'import' : totalErreurs + ' erreur(s) détectée(s)' }}</strong>
-            <p v-if="totalErreurs > 0">Corrigez les erreurs dans les fichiers CSV puis recommencez.</p>
+            <strong>{{
+              totalErreurs === 0
+                ? "Fichiers valides — prêt pour l'import"
+                : totalErreurs + ' erreur(s) détectée(s)'
+            }}</strong>
+            <p v-if="totalErreurs > 0">
+              Corrigez les erreurs dans les fichiers CSV puis recommencez.
+            </p>
           </div>
         </div>
 
@@ -887,12 +1157,12 @@ const lancerReset = async () => {
         <div v-else class="ok-bloc">✅ Fichier 3 — Clients/Commandes : aucune erreur</div>
 
         <div class="actions">
-          <button class="btn-retour-step" @click="etape = 'selection'">← Rechoisir les fichiers</button>
-          <button
-            v-if="peutImporter"
-            class="btn-importer"
-            @click="lancerImport"
-          >🚀 Lancer l'import</button>
+          <button class="btn-retour-step" @click="etape = 'selection'">
+            ← Rechoisir les fichiers
+          </button>
+          <button v-if="peutImporter" class="btn-importer" @click="lancerImport">
+            🚀 Lancer l'import
+          </button>
           <p v-else class="msg-bloque">Corrigez les erreurs avant de pouvoir importer.</p>
         </div>
       </div>
@@ -901,11 +1171,7 @@ const lancerReset = async () => {
       <div v-if="etape === 'import'" class="contenu-carte">
         <h2 class="sous-titre">🚀 Import en cours...</h2>
         <div class="log-box">
-          <div
-            v-for="(entry, i) in logImport"
-            :key="i"
-            :class="['log-ligne', 'log-' + entry.type]"
-          >
+          <div v-for="(entry, i) in logImport" :key="i" :class="['log-ligne', 'log-' + entry.type]">
             <span class="log-ts">{{ entry.ts }}</span>
             {{ entry.msg }}
           </div>
@@ -951,7 +1217,11 @@ const lancerReset = async () => {
         <details class="log-details">
           <summary>Voir le log complet ({{ logImport.length }} entrées)</summary>
           <div class="log-box">
-            <div v-for="(entry, i) in logImport" :key="i" :class="['log-ligne', 'log-' + entry.type]">
+            <div
+              v-for="(entry, i) in logImport"
+              :key="i"
+              :class="['log-ligne', 'log-' + entry.type]"
+            >
               <span class="log-ts">{{ entry.ts }}</span>
               {{ entry.msg }}
             </div>
@@ -960,7 +1230,9 @@ const lancerReset = async () => {
 
         <div class="actions">
           <button class="btn-retour-step" @click="reinitialiser">↺ Nouvel import</button>
-          <button class="btn-importer" @click="$router.push('/backoffice/dashboard')">→ Aller au dashboard</button>
+          <button class="btn-importer" @click="$router.push('/backoffice/dashboard')">
+            → Aller au dashboard
+          </button>
         </div>
       </div>
 
@@ -986,129 +1258,31 @@ const lancerReset = async () => {
           </button>
         </div>
 
-        <div v-if="logReset.length > 0" class="log-box" style="margin-top:16px">
+        <div v-if="logReset.length > 0" class="log-box" style="margin-top: 16px">
           <div v-for="(e, i) in logReset" :key="i" :class="['log-ligne', 'log-' + e.type]">
-            <span class="log-ts">{{ e.ts }}</span>{{ e.msg }}
+            <span class="log-ts">{{ e.ts }}</span
+            >{{ e.msg }}
           </div>
         </div>
 
         <div v-if="resetTermine" class="reset-done">
           ✅ Réinitialisation terminée. PrestaShop est vide.
-          <button class="btn-importer" style="margin-top:12px" @click="resetVisible = false; reinitialiser()">
+          <button
+            class="btn-importer"
+            style="margin-top: 12px"
+            @click="
+              resetVisible = false
+              reinitialiser()
+              resetVisible = false;
+              reinitialiser();
+            "
+          >
             Fermer et recommencer un import
           </button>
         </div>
       </div>
-
     </main>
   </div>
 </template>
 
-<style scoped>
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Lato:wght@300;400;700&display=swap');
-
-.page { display: flex; min-height: 100vh; background: #f0f2f5; font-family: 'Lato', sans-serif; }
-
-/* SIDEBAR */
-.sidebar { width: 220px; flex-shrink: 0; background: #1a1a2e; color: white; display: flex; flex-direction: column; padding: 24px 16px; position: sticky; top: 0; height: 100vh; }
-.sidebar-logo { font-family: 'Playfair Display', serif; font-size: 1.2rem; margin-bottom: 32px; padding-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.1); }
-.sidebar-nav { display: flex; flex-direction: column; gap: 6px; flex: 1; }
-.nav-item { background: none; border: none; color: rgba(255,255,255,0.6); padding: 10px 14px; border-radius: 8px; cursor: pointer; text-align: left; font-size: 0.9rem; transition: all 0.15s; }
-.nav-item:hover { background: rgba(255,255,255,0.07); color: white; }
-.nav-item.actif { background: rgba(255,255,255,0.12); color: white; font-weight: 700; }
-.sidebar-footer { display: flex; flex-direction: column; gap: 8px; }
-.admin-nom { color: rgba(255,255,255,0.5); font-size: 0.8rem; }
-.btn-deco { background: #e94560; color: white; border: none; padding: 8px; border-radius: 8px; cursor: pointer; font-size: 0.82rem; }
-.btn-front { background: none; border: 1px solid rgba(255,255,255,0.15); color: rgba(255,255,255,0.45); padding: 7px; border-radius: 8px; cursor: pointer; font-size: 0.8rem; }
-
-/* MAIN */
-.main { flex: 1; padding: 32px; overflow-y: auto; }
-.titre { font-family: 'Playfair Display', serif; font-size: 2rem; color: #1a1a2e; margin: 0 0 24px; }
-.contenu-carte { background: white; border-radius: 16px; padding: 32px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
-.intro { color: #666; margin: 0 0 28px; font-size: 0.95rem; line-height: 1.6; }
-
-/* SÉLECTION FICHIERS */
-.fichiers-grid { display: flex; flex-direction: column; gap: 16px; margin-bottom: 32px; }
-.fichier-bloc { display: flex; align-items: flex-start; gap: 16px; border: 1.5px solid #e8e8e8; border-radius: 12px; padding: 20px; transition: border-color 0.2s; }
-.fichier-bloc:hover { border-color: #0f3460; }
-.fichier-images { background: #fafeff; }
-.fichier-icone { font-size: 2rem; flex-shrink: 0; }
-.fichier-label { flex: 1; }
-.fichier-label strong { display: block; color: #1a1a2e; font-size: 0.95rem; margin-bottom: 4px; }
-.fichier-label span { color: #888; font-size: 0.78rem; font-family: monospace; }
-.btn-choisir { display: inline-block; background: #1a1a2e; color: white; padding: 9px 18px; border-radius: 8px; cursor: pointer; font-size: 0.82rem; white-space: nowrap; flex-shrink: 0; transition: background 0.15s; }
-.btn-choisir:hover { background: #0f3460; }
-.btn-dossier { background: #0f3460; }
-.images-liste { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.img-tag { background: #e8f4fd; color: #0f3460; padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; }
-
-/* ACTIONS */
-.actions { display: flex; align-items: center; gap: 16px; margin-top: 28px; flex-wrap: wrap; }
-.btn-valider { background: #0f3460; color: white; border: none; padding: 14px 32px; border-radius: 10px; cursor: pointer; font-size: 1rem; font-weight: 700; transition: background 0.15s; }
-.btn-valider:hover:not(:disabled) { background: #1a4a8a; }
-.btn-valider:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-importer { background: #27ae60; color: white; border: none; padding: 13px 28px; border-radius: 10px; cursor: pointer; font-size: 0.95rem; font-weight: 700; }
-.btn-importer:hover { background: #1e8449; }
-.btn-retour-step { background: white; border: 1px solid #ddd; color: #555; padding: 12px 20px; border-radius: 10px; cursor: pointer; font-size: 0.9rem; }
-.btn-retour-step:hover { background: #f5f5f5; }
-.msg-bloque { color: #e74c3c; font-size: 0.88rem; }
-
-/* VALIDATION */
-.resume-validation { display: flex; align-items: center; gap: 16px; padding: 18px 22px; border-radius: 12px; margin-bottom: 24px; }
-.resume-validation.ok { background: #eafaf1; border: 1.5px solid #a9dfbf; }
-.resume-validation.ko { background: #fdecea; border: 1.5px solid #f1948a; }
-.resume-icone { font-size: 2rem; }
-.resume-validation strong { display: block; color: #1a1a2e; font-size: 1rem; }
-.resume-validation p { color: #666; font-size: 0.85rem; margin: 4px 0 0; }
-
-.recap-data { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 24px; }
-.recap-item { background: #f8f9fa; border-radius: 10px; padding: 14px 20px; text-align: center; }
-.recap-nb { display: block; font-size: 1.8rem; font-weight: 700; color: #1a1a2e; }
-.recap-label { font-size: 0.78rem; color: #888; }
-
-.erreurs-bloc { background: #fdecea; border: 1px solid #f1948a; border-radius: 10px; padding: 16px 20px; margin-bottom: 12px; }
-.erreurs-bloc h3 { margin: 0 0 12px; color: #c0392b; font-size: 0.92rem; }
-.erreur-ligne { padding: 6px 0; color: #444; font-size: 0.85rem; border-bottom: 1px solid rgba(0,0,0,0.05); display: flex; align-items: center; gap: 10px; }
-.erreur-ligne:last-child { border-bottom: none; }
-.erreur-badge { background: #e74c3c; color: white; font-size: 0.7rem; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
-.ok-bloc { background: #eafaf1; border: 1px solid #a9dfbf; border-radius: 10px; padding: 12px 18px; color: #1e8449; font-size: 0.88rem; margin-bottom: 12px; }
-
-/* LOG */
-.log-box { background: #0d0d1a; border-radius: 10px; padding: 16px; font-family: monospace; font-size: 0.8rem; max-height: 500px; overflow-y: auto; margin-top: 12px; }
-.log-ligne { padding: 3px 0; }
-.log-info   { color: rgba(255,255,255,0.7); }
-.log-succes { color: #2ecc71; }
-.log-avert  { color: #f39c12; }
-.log-erreur { color: #e74c3c; }
-.log-ts { color: rgba(255,255,255,0.25); margin-right: 10px; font-size: 0.72rem; }
-.sous-titre { font-family: 'Playfair Display', serif; color: #1a1a2e; font-size: 1.4rem; margin: 0 0 16px; }
-
-/* DONE */
-.done-header { display: flex; align-items: center; gap: 16px; margin-bottom: 28px; }
-.done-icone { font-size: 3rem; }
-.done-header h2 { font-family: 'Playfair Display', serif; font-size: 1.8rem; color: #1a1a2e; margin: 0; }
-.resume-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 14px; margin-bottom: 28px; }
-.resume-card { background: #f8f9fa; border-radius: 12px; padding: 18px; text-align: center; }
-.resume-card.rouge { background: #fdecea; }
-.r-nb { display: block; font-size: 2rem; font-weight: 700; color: #1a1a2e; }
-.r-label { font-size: 0.78rem; color: #888; }
-.log-details summary { cursor: pointer; color: #555; font-size: 0.88rem; padding: 8px 0; }
-
-/* RESET */
-.sidebar-reset { margin-top: 16px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.1); }
-.btn-reset-ps { width: 100%; padding: 9px 12px; background: rgba(231,76,60,0.15); border: 1px solid rgba(231,76,60,0.4); color: #e74c3c; border-radius: 8px; cursor: pointer; font-size: 0.82rem; text-align: left; transition: all 0.15s; }
-.btn-reset-ps:hover { background: rgba(231,76,60,0.3); }
-
-.reset-panneau { background: white; border-radius: 16px; padding: 28px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); border: 2px solid #e74c3c; margin-top: 24px; }
-.reset-header { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 20px; }
-.reset-icone { font-size: 2.5rem; flex-shrink: 0; }
-.reset-header h2 { font-family: 'Playfair Display', serif; color: #c0392b; font-size: 1.3rem; margin: 0 0 4px; }
-.reset-header p { color: #888; font-size: 0.88rem; margin: 0; }
-.btn-fermer-reset { background: none; border: none; font-size: 1.3rem; cursor: pointer; color: #aaa; margin-left: auto; flex-shrink: 0; }
-.btn-fermer-reset:hover { color: #e74c3c; }
-.reset-avert { background: #fef9e7; border: 1px solid #f39c12; border-radius: 8px; padding: 12px 16px; color: #856404; font-size: 0.88rem; margin-bottom: 16px; }
-.btn-reset-lancer { background: #e74c3c; color: white; border: none; padding: 13px 28px; border-radius: 10px; cursor: pointer; font-size: 0.95rem; font-weight: 700; }
-.btn-reset-lancer:hover:not(:disabled) { background: #c0392b; }
-.btn-reset-lancer:disabled { opacity: 0.45; cursor: not-allowed; }
-.reset-done { background: #eafaf1; border: 1px solid #a9dfbf; border-radius: 10px; padding: 16px 20px; color: #1e8449; font-size: 0.92rem; display: flex; flex-direction: column; align-items: flex-start; margin-top: 16px; }
-</style>
+<style scoped src="@/assets/Back/ImportData.css"></style>

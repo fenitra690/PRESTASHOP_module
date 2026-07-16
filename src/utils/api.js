@@ -6,7 +6,7 @@ const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: '@_',
   cdataPropName: '__cdata',
-  textNodeName: '#text'
+  textNodeName: '#text',
 })
 
 const WS_KEY = '6CcZSeHI1MjkPrp1L9RGbKmoxNUEoMf7'
@@ -14,13 +14,13 @@ const WS_KEY = '6CcZSeHI1MjkPrp1L9RGbKmoxNUEoMf7'
 // Client GET JSON
 const apiClient = axios.create({
   baseURL: '/api',
-  params: { ws_key: WS_KEY, output_format: 'JSON' }
+  params: { ws_key: WS_KEY, output_format: 'JSON' },
 })
 
 // Client POST/PUT XML
 const apiClientXml = axios.create({
   baseURL: '/api',
-  headers: { 'Content-Type': 'text/xml; charset=utf-8' }
+  headers: { 'Content-Type': 'text/xml; charset=utf-8' },
 })
 
 // ============================================================
@@ -43,11 +43,27 @@ function objetVersXml(nomRessource, champs) {
   let lignes = ''
 
   for (const key in champs) {
-    if (key === 'associations') continue  // traité séparément
+    if (key === 'associations') continue // traité séparément
     const val = champs[key]
+
     if (val === null || val === undefined) {
       lignes += `<${key}></${key}>`
+    } else if (Array.isArray(val) && val.length > 0 && val[0].id) {
+      // Cas : name: [ {id: 1, value: 'Test'}, ... ] (souvent utilisé pour les champs multilangues)
+      lignes += `<${key}>`
+      for (const lang of val) {
+        lignes += `<language id="${lang.id}"><![CDATA[${lang.value || ''}]]></language>`
+      }
+      lignes += `</${key}>`
+    } else if (typeof val === 'object' && val.language && Array.isArray(val.language)) {
+      // Cas : name: { language: [ {id: 1, value: 'Test'} ] }
+      lignes += `<${key}>`
+      for (const lang of val.language) {
+        lignes += `<language id="${lang.id}"><![CDATA[${lang.value || ''}]]></language>`
+      }
+      lignes += `</${key}>`
     } else {
+      // Cas standard
       lignes += `<${key}><![CDATA[${val}]]></${key}>`
     }
   }
@@ -107,7 +123,7 @@ export default {
     try {
       const response = await apiClient.get(`/${resource}`)
       if (typeof response.data === 'object') return response.data
-      return parser.parse(response.data)
+      try { return parser.parse(response.data) } catch(e) { console.error('PARSE ERROR', response.data); throw e; }
     } catch (error) {
       console.error(`[API GET] Erreur sur ${resource}:`, error)
       return null
@@ -123,15 +139,15 @@ export default {
       const nomSingulier = singulier(resource)
       const xml = objetVersXml(nomSingulier, champs)
 
-      console.log(`[API POST] ${resource} — XML envoyé:`, xml)
-
       const response = await apiClientXml.post(`/${resource}?ws_key=${WS_KEY}`, xml)
 
-      // Réponse XML -> JSON
-      const resultat = parser.parse(response.data)
-      console.log(`[API POST] ${resource} — Réponse:`, resultat)
-      return resultat
+      // Conversion sécurisée XML -> JSON
+      const data = typeof response.data === 'string' && response.data.includes('<') 
+        ? parser.parse(response.data) 
+        : response.data
 
+      console.log(`[API POST] ${resource} — Réponse:`, data)
+      return data
     } catch (error) {
       // Afficher le XML d'erreur PrestaShop si disponible
       const errData = error.response?.data || error.message || error
@@ -154,8 +170,7 @@ export default {
       console.log(`[API PUT] ${resource}/${id} — XML envoyé:`, xml)
 
       const response = await apiClientXml.put(`/${resource}/${id}?ws_key=${WS_KEY}`, xml)
-      return parser.parse(response.data)
-
+      try { return parser.parse(response.data) } catch(e) { console.error('PARSE ERROR', response.data); throw e; }
     } catch (error) {
       console.error(`[API PUT] Erreur sur ${resource}/${id}:`, error.response?.data || error)
       return null
@@ -170,5 +185,5 @@ export default {
       console.error(`[API DELETE] Erreur sur ${resource}/${id}:`, error)
       return null
     }
-  }
+  },
 }
