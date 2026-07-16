@@ -20,6 +20,12 @@ export default defineConfig({
         target: 'http://localhost/Pestashop1',
         changeOrigin: true,
         secure: false,
+      },
+      // Tunnel pour les modules frontaux PrestaShop
+      '/index.php': {
+        target: 'http://localhost/Pestashop1',
+        changeOrigin: true,
+        secure: false,
       }
     }
   }

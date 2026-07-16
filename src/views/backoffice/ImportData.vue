@@ -117,6 +117,7 @@ function estDateValide(s) {
 
 // Convertir DD/MM/YYYY -> YYYY-MM-DD (pour PrestaShop)
 function dateVersPS(s) {
+  if (!s || !s.includes('/')) return '2026-05-18'
   const [j, m, a] = s.split('/')
   return `${a}-${m}-${j}`
 }
@@ -548,6 +549,8 @@ const lancerImport = async () => {
   // ============================================================
   log('--- Import déclinaisons & stocks ---')
 
+  const historiqueStockStorage = db.g('stock_historique') || []
+
   for (const d of declinaisons.value) {
     const idProd = mapProduits[d.reference]
     if (!idProd) {
@@ -556,6 +559,24 @@ const lancerImport = async () => {
     }
 
     const stockInitial = parseInt(d.stock_initial) || 0
+    const infoProd = produits.value.find(
+      (p) => p.reference === d.reference || p.reference === d.reference.toUpperCase(),
+    )
+    const mvtDate =
+      infoProd && infoProd.date_availability_produit
+        ? infoProd.date_availability_produit
+        : '18/05/2026'
+
+    const enregMouvement = (qteApres, deltaVal) => {
+      historiqueStockStorage.push({
+        id_product: idProd,
+        nom: `Produit ${d.reference}`,
+        date: mvtDate,
+        delta: deltaVal,
+        quantite_apres: qteApres,
+        timestamp: Date.now() + Math.floor(Math.random() * 1000),
+      })
+    }
 
     // Cas sans déclinaison (specificité vide) : on met juste le stock
     if (!d.specificité && !d.karazany) {
@@ -578,6 +599,7 @@ const lancerImport = async () => {
             depends_on_stock: 0,
             out_of_stock: 0,
           })
+          enregMouvement(stockInitial, stockInitial)
           resumeImport.value.declinaisons++
           log(`  → Stock ${d.reference} = ${stockInitial}`, 'succes')
         }
@@ -607,11 +629,15 @@ const lancerImport = async () => {
           depends_on_stock: 0,
           out_of_stock: 0,
         })
+        enregMouvement(nouvelleQte, stockInitial)
         resumeImport.value.declinaisons++
         log(`  → Stock ${d.reference} mis à jour : ${nouvelleQte}`, 'succes')
       }
     }
   }
+
+  // Sauvegarder d'un coup l'historique de stock en localStorage
+  db.s('stock_historique', historiqueStockStorage)
 
   // ============================================================
   // D. IMPORTER LES CLIENTS + COMMANDES
@@ -709,6 +735,8 @@ const lancerImport = async () => {
     }
 
     // Créer le panier
+    const dateCmd = dateVersPS(row.date) + ' 12:00:00'
+
     const resPan = await api.post('carts', {
       id_customer: idClient,
       id_address_delivery: idAddr,
@@ -716,6 +744,7 @@ const lancerImport = async () => {
       id_currency: 1,
       id_lang: 1,
       id_carrier: 1,
+      date_add: dateCmd,
       associations: {
         cart_rows: {
           nodeType: 'cart_row',
@@ -742,6 +771,7 @@ const lancerImport = async () => {
       id_lang: 1,
       id_customer: idClient,
       id_carrier: 1,
+      date_add: dateCmd,
       module: 'ps_cashondelivery',
       payment: 'Paiement a la livraison',
       total_paid: '10.00',
@@ -1003,7 +1033,15 @@ const lancerReset = async () => {
         <button class="nav-item actif">📥 Import données</button>
       </nav>
       <div class="sidebar-reset">
-        <button class="btn-reset-ps" @click="logReset = []">🗑️ Réinitialiser les données</button>
+        <button
+          class="btn-reset-ps"
+          @click="
+            resetVisible = !resetVisible;
+            logReset = [];
+          "
+        >
+          🗑️ Réinitialiser les données
+        </button>
       </div>
       <div class="sidebar-footer">
         <span class="admin-nom">{{ sessionBack?.prenom }}</span>
@@ -1289,8 +1327,8 @@ const lancerReset = async () => {
             class="btn-importer"
             style="margin-top: 12px"
             @click="
-              resetVisible = false
-              reinitialiser()
+              resetVisible = false;
+              reinitialiser();
             "
           >
             Fermer et recommencer un import

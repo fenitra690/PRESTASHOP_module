@@ -234,10 +234,118 @@ const totalGeneral = computed(() => {
 })
 
 // ============================================================
+// TABLEAU DE BORD : STATISTIQUES AVANCÉES
+// ============================================================
+const statistiquesData = computed(() => {
+  let venteTotalHT = 0
+  let achatTotalHT = 0
+  const catMap = {}
+
+  // 1. Initialiser les catégories et la quantité disponible
+  produits.value.forEach((p) => {
+    const catId = p.id_category_default || 'Inconnue'
+    const catNom = p.associations?.categories
+      ? p.associations.categories.find((c) => c.id == catId)?.name || 'Catégorie ' + catId
+      : 'Catégorie ' + catId
+    if (!catMap[catId]) {
+      catMap[catId] = {
+        id: catId,
+        nom: 'Catégorie ' + catId,
+        qte_physique: 0,
+        qte_reserve: 0,
+        qte_dispo: 0,
+        benefice: 0,
+      }
+    }
+    catMap[catId].qte_dispo += getStock(p.id)
+  })
+
+  // 2. Parcourir les commandes
+  commandes.value.forEach((cmd) => {
+    const etat = String(cmd.current_state)
+    const isAnnulee = etat === '6'
+    const isLivree = etat === '5' || etat === '2'
+
+    if (!isAnnulee) {
+      venteTotalHT += parseFloat(cmd.total_paid_tax_excl) || parseFloat(cmd.total_paid) / 1.2 || 0
+    }
+
+    const rowsRaw = cmd.associations?.order_rows?.order_row || cmd.associations?.order_rows
+    if (!rowsRaw) return
+    const orderRows = Array.isArray(rowsRaw) ? rowsRaw : [rowsRaw]
+
+    orderRows.forEach((row) => {
+      if (!row || !row.product_id) return
+
+      const pId = row.product_id
+      const qte = parseInt(row.product_quantity) || 0
+      const p = produits.value.find((prod) => String(prod.id) === String(pId))
+      const catId = p?.id_category_default || 'Inconnue'
+
+      if (!catMap[catId]) {
+        catMap[catId] = {
+          id: catId,
+          nom: 'Catégorie ' + catId,
+          qte_physique: 0,
+          qte_reserve: 0,
+          qte_dispo: 0,
+          benefice: 0,
+        }
+      }
+
+      const wsPrice = p ? parseFloat(p.wholesale_price || 0) : 0
+      const priceHT = parseFloat(row.unit_price_tax_excl) || (p ? parseFloat(p.price || 0) : 0)
+
+      if (!isAnnulee) {
+        achatTotalHT += wsPrice * qte
+      }
+
+      if (isLivree) {
+        catMap[catId].benefice += (priceHT - wsPrice) * qte
+      }
+
+      const isReserve = ['1', '2', '3'].includes(etat)
+      if (isReserve) {
+        catMap[catId].qte_reserve += qte
+      }
+    })
+  })
+
+  // 3. Post-calcul
+  Object.values(catMap).forEach((cat) => {
+    cat.qte_physique = cat.qte_dispo + cat.qte_reserve
+  })
+
+  return {
+    venteTotalHT,
+    achatTotalHT,
+    categories: Object.values(catMap),
+  }
+})
+
+// ============================================================
 // MODIFIER L'ÉTAT D'UNE COMMANDE
 // ============================================================
 const modifierEtat = async (cmd, nouvelIdEtat) => {
-  // 1. On crée une copie de la commande
+  // Pour les états 5 (Livré) et 6 (Annulé), on utilise le module mon_order_state
+  if (String(nouvelIdEtat) === '5' || String(nouvelIdEtat) === '6') {
+    try {
+      const url = `/index.php?fc=module&module=mon_order_state&controller=update&id_order=${cmd.id}&id_order_state=${nouvelIdEtat}`
+      // On passe en POST par convention, même si l'URL porte les params
+      const res = await fetch(url, { method: 'POST' })
+      if (res.ok) {
+        cmd.current_state = String(nouvelIdEtat)
+      } else {
+        alert('Erreur lors de la mise à jour via le module mon_order_state.')
+      }
+    } catch (e) {
+      console.error(e)
+      alert("Erreur réseau avec le module de changement d'état.")
+    }
+    return
+  }
+
+  // 1. On crée une copie de la commande pour API Native
   const payload = { ...cmd }
 
   // 2. On supprime les associations (lignes de produits) qui font planter le convertisseur XML
@@ -423,6 +531,12 @@ const seDeconnecter = () => {
         <button :class="['nav-item', vue === 'stock' ? 'actif' : '']" @click="vue = 'stock'">
           📦 Stock
         </button>
+        <button
+          :class="['nav-item', vue === 'statistiques' ? 'actif' : '']"
+          @click="vue = 'statistiques'"
+        >
+          📊 Statistiques
+        </button>
         <button class="nav-item" @click="$router.push('/backoffice/import')">
           📥 Import données
         </button>
@@ -547,11 +661,25 @@ const seDeconnecter = () => {
                   <td>
                     <div class="actions-etat">
                       <button
-                        v-if="String(cmd.current_state) !== '2'"
+                        v-if="
+                          String(cmd.current_state) !== '2' &&
+                          String(cmd.current_state) !== '5' &&
+                          String(cmd.current_state) !== '6'
+                        "
                         class="btn-etat valider"
                         @click="modifierEtat(cmd, 2)"
                       >
                         Paiement effectué
+                      </button>
+                      <button
+                        v-if="
+                          String(cmd.current_state) !== '5' && String(cmd.current_state) !== '6'
+                        "
+                        class="btn-etat en-attente"
+                        @click="modifierEtat(cmd, 5)"
+                        style="background: #3498db; color: white"
+                      >
+                        Livrer
                       </button>
                       <button
                         v-if="String(cmd.current_state) !== '6'"
@@ -681,6 +809,70 @@ const seDeconnecter = () => {
       <!-- ==============================
            VUE : IMPORTATION
            ============================== -->
+      <!-- ==============================
+           VUE : STATISTIQUES
+           ============================== -->
+      <div v-else-if="vue === 'statistiques'">
+        <h1 class="titre">📊 Statistiques Commerciales</h1>
+
+        <!-- Kpi / Totaux HT -->
+        <div class="stats-grid">
+          <div class="stat-card">
+            <span class="stat-label">Total Vente HT</span>
+            <span class="stat-val">{{ statistiquesData.venteTotalHT.toFixed(2) }} €</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Total Achat HT</span>
+            <span class="stat-val">{{ statistiquesData.achatTotalHT.toFixed(2) }} €</span>
+          </div>
+          <div class="stat-card montant">
+            <span class="stat-label">Bénéfice Global</span>
+            <span class="stat-val"
+              >{{
+                (statistiquesData.venteTotalHT - statistiquesData.achatTotalHT).toFixed(2)
+              }}
+              €</span
+            >
+          </div>
+        </div>
+
+        <!-- Tableau par catégorie -->
+        <div class="section">
+          <h2 class="section-titre">Détails Stocks & Bénéfices par catégorie</h2>
+          <div class="tableau-wrapper">
+            <table class="tableau">
+              <thead>
+                <tr>
+                  <th>Catégorie / ID</th>
+                  <th>Qté physique</th>
+                  <th>Qté réservée (Cmd en cours)</th>
+                  <th>Qté disponible</th>
+                  <th>Bénéfice (Livrées)</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="cat in statistiquesData.categories" :key="cat.id">
+                  <td>
+                    <strong>{{ cat.nom }}</strong>
+                  </td>
+                  <td>{{ cat.qte_physique }}</td>
+                  <td class="badge-type">{{ cat.qte_reserve }}</td>
+                  <td :class="cat.qte_dispo > 0 ? 'vert' : 'rouge'">
+                    <strong>{{ cat.qte_dispo }}</strong>
+                  </td>
+                  <td>
+                    <strong>{{ cat.benefice.toFixed(2) }} €</strong>
+                  </td>
+                </tr>
+                <tr v-if="statistiquesData.categories.length === 0">
+                  <td colspan="5" class="vide-cell">Aucune donnée de catégorie disponible.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
       <div v-else-if="vue === 'import'">
         <h1 class="titre">📥 Importation des données</h1>
         <div class="section">
