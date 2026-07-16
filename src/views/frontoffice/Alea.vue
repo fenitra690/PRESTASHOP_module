@@ -1,20 +1,48 @@
 <script setup>
 import api from '@/utils/api.js'
 import db from '@/utils/db.js'
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import JSZip from 'jszip'
 
 const router = useRouter()
 const sessionBack = db.session('admin', null)
-const checker = ref(2)
+const maxsise1 = ref(2)
 if (!sessionBack.value) router.push('/backoffice/login')
 
 // ============================================================
 // ÉTAT GLOBAL
 // ============================================================
-const etape = ref('selection') // 'selection' | 'validation' | 'import' | 'done'
-const enCours = ref(false)
+// --- ÉTAT RETRAIT DE STOCK (Fix crash length & Catégories) ---
+const categorieCible = ref('')
+const quantiteARetirer = ref(0)
+
+const categorieCible1 = ref('')
+const quantiteARetirer1 = ref(0)
+
+const logRetrait = ref([])
+const enCoursRetrait = ref(false)
+const categories = ref([])
+
+onMounted(async () => {
+  const res = await api.get('categories?display=full')
+  if (res) {
+    const raw = res.categories || res.prestashop?.categories?.category
+    if (raw) {
+      const liste = Array.isArray(raw) ? raw : [raw]
+      categories.value = liste.filter(c => Number(c.id) > 2)
+    }
+  }
+})
+
+function extraireNomCategorie(cat) {
+  if (!cat) return ''
+  let n = cat.name
+  if (!n) return 'Catégorie #' + cat.id
+  if (typeof n === 'string') return n
+  const lang = n.language ? (Array.isArray(n.language) ? n.language[0] : n.language) : n
+  return lang.value || lang._ || lang['#text'] || lang.__cdata || 'Catégorie #' + cat.id
+}
 
 // Fichiers sélectionnés
 const fichier1 = ref(null) // produits
@@ -1012,94 +1040,6 @@ const lancerReset = async () => {
 
   let usedCartIds = new Set()
 
-  // ---- SUPPRIMER LES COMMANDES ----
-  logR('Chargement des commandes...')
-  const resCmd = await api.get('orders?display=full')
-  if (resCmd) {
-    const raw = resCmd.orders || resCmd.prestashop?.orders?.order
-    const liste = raw ? (Array.isArray(raw) ? raw : [raw]) : []
-    logR(`${liste.length} commande(s) trouvée(s)`)
-    for (const cmd of liste) {
-      if (cmd.id_cart) usedCartIds.add(String(cmd.id_cart))
-
-      try {
-        const r = await api.delete('orders', cmd.id)
-        logR(`Commande #${cmd.id} supprimée`, r !== null ? 'succes' : 'avert')
-      } catch (e) {
-        logR(`Erreur suppression commande #${cmd.id}`, 'erreur')
-      }
-    }
-  }
-
-  // ---- SUPPRIMER LES PANIERS ----
-  logR('Chargement des paniers...')
-  const resCarts = await api.get('carts?display=full')
-  if (resCarts) {
-    const raw = resCarts.carts || resCarts.prestashop?.carts?.cart
-    const liste = raw ? (Array.isArray(raw) ? raw : [raw]) : []
-    logR(`${liste.length} panier(s) trouvé(s)`)
-
-    // On ne peut pas supprimer les paniers liés à une commande (PrestaShop renvoie une erreur 500)
-    const aSupprimer = liste.filter((c) => !usedCartIds.has(String(c.id)))
-    logR(`${aSupprimer.length} panier(s) supprimable(s) (non liés à une commande)`)
-
-    for (const cart of aSupprimer) {
-      try {
-        await api.delete('carts', cart.id)
-        logR(`Panier #${cart.id} supprimé`, 'succes')
-      } catch (e) {
-        logR(`Erreur sur Panier #${cart.id}`, 'avert')
-      }
-    }
-  }
-
-  // ---- SUPPRIMER LES CLIENTS ET ADRESSES ----
-  logR('Chargement des adresses...')
-  const resAddr = await api.get('addresses?display=full')
-  if (resAddr) {
-    const rawA = resAddr.addresses || resAddr.prestashop?.addresses?.address
-    const listeA = rawA ? (Array.isArray(rawA) ? rawA : [rawA]) : []
-    logR(`${listeA.length} adresse(s) trouvée(s)`)
-    for (const adr of listeA) {
-      try {
-        await api.delete('addresses', adr.id)
-      } catch (e) {}
-    }
-  }
-
-  logR('Chargement des clients...')
-  const resCli = await api.get('customers?display=full')
-  if (resCli) {
-    const raw = resCli.customers || resCli.prestashop?.customers?.customer
-    const liste = raw ? (Array.isArray(raw) ? raw : [raw]) : []
-    logR(`${liste.length} client(s) trouvé(s)`)
-    for (const cli of liste) {
-      try {
-        const r = await api.delete('customers', cli.id)
-        logR(`Client #${cli.id} (${cli.email}) supprimé`, r !== null ? 'succes' : 'avert')
-      } catch (e) {
-        logR(`Erreur suppression client #${cli.id}`, 'erreur')
-      }
-    }
-  }
-
-  // ---- SUPPRIMER LES CATÉGORIES CRÉÉES ----
-  logR('Chargement des catégories...')
-  const resCat = await api.get('categories?display=full')
-  if (resCat) {
-    const rawCat = resCat.categories || resCat.prestashop?.categories?.category
-    const listeCat = rawCat ? (Array.isArray(rawCat) ? rawCat : [rawCat]) : []
-    const aSupprimerCat = listeCat.filter((c) => parseInt(c.id) > 2) // On garde Root (1) et Accueil (2)
-    logR(`${aSupprimerCat.length} catégorie(s) à supprimer`)
-    for (const cat of aSupprimerCat) {
-      try {
-        await api.delete('categories', cat.id)
-        logR(`Catégorie #${cat.id} supprimée`, 'succes')
-      } catch (e) {
-        logR(`Erreur suppression Catégorie #${cat.id}`, 'erreur')
-      }
-    }
-  }
 
   // ---- RAZ DES STOCKS ET SUPPRIMER LES PRODUITS ----
   logR('Réinitialisation des stocks...')
@@ -1149,294 +1089,227 @@ const lancerReset = async () => {
   enCoursReset.value = false
   resetTermine.value = true
 }
+
+const verifierNom = () => {
+  alert('Test : ' + nomATester.value)
+}
+
+// Fonction globale pour appeler les deux en même temps
+const lancerGlobalStock = async () => {
+  logRetrait.value = [] // On vide une seule fois au début
+  enCoursRetrait.value = true
+  try {
+    await lancerRetraitStock1(true) // true pour dire qu'on gère le chargement ici
+    await lancerRetraitStock(true)
+  } finally {
+    enCoursRetrait.value = false
+  }
+}
+
+const lancerRetraitStock = async (isChained = false) => {
+  if (!categorieCible.value || quantiteARetirer.value <= 0) {
+    return // On sort silencieusement si c'est vide lors du double appel
+  }
+
+  if (!isChained) {
+    enCoursRetrait.value = true
+    logRetrait.value = []
+  }
+
+  try {
+    // 1. Trouver l'ID de la catégorie par son nom
+    const resCats = await api.get('categories?display=full')
+    const cats = resCats?.categories || resCats?.prestashop?.categories?.category
+    const listCats = Array.isArray(cats) ? cats : [cats]
+    
+    const cat = listCats.find(c => {
+      const search = String(categorieCible.value).toLowerCase().trim()
+      
+      // 1. Vérification par ID
+      if (String(c.id) === search) return true
+
+      // 2. Vérification par Nom (extraction robuste du texte)
+      let name = ''
+      if (typeof c.name === 'string') {
+        name = c.name
+      } else if (c.name?.language) {
+        const l = Array.isArray(c.name.language) ? c.name.language[0] : c.name.language
+        name = l?.value || l?.['#text'] || l?._ || l?.__cdata || ''
+      } else if (c.name) {
+        name = c.name.value || c.name['#text'] || c.name._ || c.name.__cdata || ''
+      }
+      
+      return name.toLowerCase().trim() === search
+    })
+
+    if (!cat) {
+      alert('Catégorie introuvable.')
+      return
+    }
+
+    // 2. Récupérer les produits
+    const resProd = await api.get('products?display=full')
+    const prods = resProd?.products || resProd?.prestashop?.products?.product
+    const listProds = Array.isArray(prods) ? prods : [prods]
+
+    // 3. Filtrer les produits de la catégorie
+    const filtrés = listProds.filter(p => String(p.id_category_default) === String(cat.id))
+
+    // if (filtrés.length === 0) {
+    //   alert('Aucun produit trouvé dans cette catégorie.')
+    //   return
+    // }
+
+    for (const p of filtrés) {
+      // 4. Récupérer le stock actuel
+      const resS = await api.get(`stock_availables?filter[id_product]=${p.id}&filter[id_product_attribute]=0&display=full`)
+      const rawS = resS?.stock_availables || resS?.prestashop?.stock_availables?.stock_available
+      const s = Array.isArray(rawS) ? rawS[0] : rawS
+
+      if (s?.id) {
+        const qteActuelle = parseInt(s.quantity) || 0
+        const voulu = quantiteARetirer.value
+        const reel = Math.min(qteActuelle, voulu) // On ne retire pas plus que ce qu'on a
+        const nouvelleQte = qteActuelle - reel
+
+        await api.put('stock_availables', s.id, {
+          id: s.id,
+          id_product: p.id,
+          id_product_attribute: 0,
+          id_shop: s.id_shop || 1,
+          id_shop_group: s.id_shop_group || 0,
+          quantity: nouvelleQte,
+          depends_on_stock: 0,
+          out_of_stock: 0,
+        })
+
+        logRetrait.value.push({
+          nom: typeof p.name === 'string' ? p.name : (p.name?.language?.[0]?.value || p.reference),
+          reel: reel,
+          voulu: voulu,
+          avant: qteActuelle,
+          apres: nouvelleQte,
+          type: 'retrait'
+        })
+      }
+    }
+  } catch (e) {
+    alert('Erreur : ' + e.message)
+  } finally {
+    if (!isChained) enCoursRetrait.value = false
+  }
+}
+/////////////////////////////////////
+const lancerRetraitStock1 = async (isChained = false) => {
+  if (!categorieCible1.value || quantiteARetirer1.value <= 0) {
+    return // On sort silencieusement si vide
+  }
+
+  if (!isChained) {
+    enCoursRetrait.value = true
+    logRetrait.value = []
+  }
+
+  try {
+    // 1. Trouver l'ID de la catégorie par son nom
+    const resCats = await api.get('categories?display=full')
+    const cats = resCats?.categories || resCats?.prestashop?.categories?.category
+    const listCats = Array.isArray(cats) ? cats : [cats]
+    
+    const cat = listCats.find(c => {
+      const search = String(categorieCible1.value).toLowerCase().trim()
+      
+      // 1. Vérification par ID
+      if (String(c.id) === search) return true
+
+      // 2. Vérification par Nom (extraction robuste du texte)
+      let name = ''
+      if (typeof c.name === 'string') {
+        name = c.name
+      } else if (c.name?.language) {
+        const l = Array.isArray(c.name.language) ? c.name.language[0] : c.name.language
+        name = l?.value || l?.['#text'] || l?._ || l?.__cdata || ''
+      } else if (c.name) {
+        name = c.name.value || c.name['#text'] || c.name._ || c.name.__cdata || ''
+      }
+      
+      return name.toLowerCase().trim() === search
+    })
+
+    if (!cat) {
+      alert('Catégorie introuvable.')
+      return
+    }
+
+    // 2. Récupérer les produits
+    const resProd = await api.get('products?display=full')
+    const prods = resProd?.products || resProd?.prestashop?.products?.product
+    const listProds = Array.isArray(prods) ? prods : [prods]
+
+    // 3. Filtrer les produits de la catégorie
+    const filtrés = listProds.filter(p => String(p.id_category_default) === String(cat.id))
+
+    if (filtrés.length === 0) {
+      alert('Aucun produit trouvé dans cette catégorie.')
+      return
+    }
+
+    for (const p of filtrés) {
+      // 4. Récupérer le stock actuel
+      const resS = await api.get(`stock_availables?filter[id_product]=${p.id}&filter[id_product_attribute]=0&display=full`)
+      const rawS = resS?.stock_availables || resS?.prestashop?.stock_availables?.stock_available
+      const s = Array.isArray(rawS) ? rawS[0] : rawS
+
+      if (s?.id) {
+        const qteActuelle = parseInt(s.quantity) || 0
+        const voulu1 = quantiteARetirer1.value
+        const madmax = maxsise1.value 
+        const reel1 = Math.min(qteActuelle, voulu1) // On ne retire pas plus que ce qu'on a
+        const nouvelleQte = qteActuelle + reel1
+
+        
+        alert(`Votre stoque atteindra ${qteActuelle} -> ${nouvelleQte}`)
+        
+
+        if (madmax < nouvelleQte) {
+            alert(`Votre nombre exede la capaciter maximum ${qteActuelle} -> ${nouvelleQte} -> mad max est ${madmax} `)
+            return
+        }
+        await api.put('stock_availables', s.id, {
+          id: s.id,
+          id_product: p.id,
+          id_product_attribute: 0,                                                     
+          id_shop: s.id_shop || 1,
+          id_shop_group: s.id_shop_group || 0,
+          quantity: nouvelleQte,
+          depends_on_stock: 0,
+          out_of_stock: 0,
+        })
+
+        logRetrait.value.push({
+          nom: typeof p.name === 'string' ? p.name : (p.name?.language?.[0]?.value || p.reference),
+          reel1: reel1,
+          voulu1: voulu1,
+          avant: qteActuelle,
+          apres: nouvelleQte,
+          type: 'ajout'
+        })
+      }
+    }
+  } catch (e) {
+    alert('Erreur : ' + e.message)
+  } finally {
+    if (!isChained) enCoursRetrait.value = false
+  }
+}
 </script>
 
 <template>
-  <div class="page">
-    <!-- SIDEBAR identique au dashboard -->
-    <aside class="sidebar">
-      <div class="sidebar-logo">⚙️ Admin</div>
-      <nav class="sidebar-nav">
-        <button class="nav-item" @click="$router.push('/backoffice/dashboard')">
-          📋 Dashboard
-        </button>
-        <button class="nav-item actif">📥 Import données</button>
-      </nav>
-      <div class="sidebar-reset">
-        <button
-          class="btn-reset-ps"
-          @click="
-            resetVisible = !resetVisible
-            logReset = [];
-          "
-        >
-          🗑️ Réinitialiser les données
-        </button>
-      </div>
-      <div class="sidebar-footer">
-        <span class="admin-nom">{{ sessionBack?.prenom }}</span>
-        <button
-          class="btn-deco"
-          @click="
-            () => {
-              db.session('admin', null).value = null
-              $router.push('/backoffice/login')
-            }
-          "
-        >
-          Déconnexion
-        </button>
-        <button class="btn-front" @click="$router.push('/')">← Accueil</button>
-      </div>
-    </aside>
-
-    <main class="main">
-      <h1 class="titre">📥 Import de données</h1>
-
-      <!-- ========== ÉTAPE 1 : SÉLECTION ========== -->
-      <div v-if="etape === 'selection'" class="contenu-carte">
-        <p class="intro">
-          Sélectionnez les 3 fichiers CSV et (optionnellement) le dossier contenant les images. Les
-          fichiers seront validés avant l'import.
-        </p>
-
-        <div class="fichiers-grid">
-          <!-- Fichier 1 : Produits -->
-          <div class="fichier-bloc">
-            <div class="fichier-icone">📄</div>
-            <div class="fichier-label">
-              <strong>Fichier 1 — Produits</strong>
-              <span
-                >date_availability_produit, nom, reference, prix_ttc, Taxe, categorie,
-                prix_achat</span
-              >
-            </div>
-            <label class="btn-choisir">
-              {{ fichier1 ? '✓ ' + fichier1.name : 'Choisir le fichier CSV' }}
-              <input type="file" accept=".csv" @change="onFichier1" hidden />
-            </label>
-          </div>
-
-          <!-- Fichier 2 : Déclinaisons -->
-          <div class="fichier-bloc">
-            <div class="fichier-icone">📄</div>
-            <div class="fichier-label">
-              <strong>Fichier 2 — Déclinaisons & Stocks</strong>
-              <span>reference, specificité, karazany, stock_initial, prix_vente_ttc</span>
-            </div>
-            <label class="btn-choisir">
-              {{ fichier2 ? '✓ ' + fichier2.name : 'Choisir le fichier CSV' }}
-              <input type="file" accept=".csv" @change="onFichier2" hidden />
-            </label>
-          </div>
-
-          <!-- Fichier 3 : Clients/Commandes -->
-          <div class="fichier-bloc">
-            <div class="fichier-icone">📄</div>
-            <div class="fichier-label">
-              <strong>Fichier 3 — Clients & Commandes</strong>
-              <span>date, nom, email, pwd, adresse, achat, etat</span>
-            </div>
-            <label class="btn-choisir">
-              {{ fichier3 ? '✓ ' + fichier3.name : 'Choisir le fichier CSV' }}
-              <input type="file" accept=".csv" @change="onFichier3" hidden />
-            </label>
-          </div>
-
-          <!-- Dossier Images -->
-          <div class="fichier-bloc fichier-images">
-            <div class="fichier-icone">🗂️</div>
-            <div class="fichier-label">
-              <strong>Images (fichier ZIP)</strong>
-              <span
-                >Sélectionnez le fichier ZIP contenant les images (PNG/JPG). Nommées par référence
-                produit : T_01.jpg, C_03.png...</span
-              >
-            </div>
-              <div class="radios">
-                <label class="radio"
-                  ><input type="radio" v-model="checker" value="1" />ok</label
-                >
-                <label class="radio"
-                  ><input type="radio" v-model="checker" value="2" />non</label
-                >
-              </div>
-            <label class="btn-choisir btn-dossier">
-              {{
-                dossierImages.length > 0
-                  ? '✓ ' + dossierImages.length + ' image(s) extraite(s)'
-                  : 'Choisir le fichier ZIP'
-              }}
-              <input type="file" accept=".zip" @change="onDossierImages" hidden />
-              <!-- =====ceci est le point d'entre ne l'-->
-            </label>
-            <div v-if="dossierImages.length > 0" class="images-liste">
-              <span v-for="img in dossierImages" :key="img.name" class="img-tag">{{
-                img.name
-              }}</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="actions">
-          <button class="btn-valider" :disabled="!peutValider || enCours" @click="validerFichiers">
-            {{ enCours ? '⏳ Analyse en cours...' : '→ Analyser et valider les fichiers' }}
-          </button>
-        </div>
-      </div>
-
-      <!-- ========== ÉTAPE 2 : VALIDATION ========== -->
-      <div v-if="etape === 'validation'" class="contenu-carte">
-        <div :class="['resume-validation', totalErreurs === 0 ? 'ok' : 'ko']">
-          <span class="resume-icone">{{ totalErreurs === 0 ? '✅' : '❌' }}</span>
-          <div>
-            <strong>{{
-              totalErreurs === 0
-                ? "Fichiers valides — prêt pour l'import"
-                : totalErreurs + ' erreur(s) détectée(s)'
-            }}</strong>
-            <p v-if="totalErreurs > 0">
-              Corrigez les erreurs dans les fichiers CSV puis recommencez.
-            </p>
-          </div>
-        </div>
-
-        <!-- Résumé des données -->
-        <div class="recap-data">
-          <div class="recap-item">
-            <span class="recap-nb">{{ produits.length }}</span>
-            <span class="recap-label">produit(s)</span>
-          </div>
-          <div class="recap-item">
-            <span class="recap-nb">{{ declinaisons.length }}</span>
-            <span class="recap-label">déclinaison(s)</span>
-          </div>
-          <div class="recap-item">
-            <span class="recap-nb">{{ commandes.length }}</span>
-            <span class="recap-label">client(s)/commande(s)</span>
-          </div>
-          <div class="recap-item">
-            <span class="recap-nb">{{ dossierImages.length }}</span>
-            <span class="recap-label">image(s)</span>
-          </div>
-        </div>
-
-        <!-- Erreurs F1 -->
-        <div v-if="erreursF1.length > 0" class="erreurs-bloc">
-          <h3>❌ Fichier 1 — Produits ({{ erreursF1.length }} erreur(s))</h3>
-          <div v-for="(e, i) in erreursF1" :key="i" :class="['erreur-ligne', 'type-' + e.type]">
-            <span class="erreur-badge">{{ e.type }}</span>
-            {{ e.msg }}
-          </div>
-        </div>
-        <div v-else class="ok-bloc">✅ Fichier 1 — Produits : aucune erreur</div>
-
-        <!-- Erreurs F2 -->
-        <div v-if="erreursF2.length > 0" class="erreurs-bloc">
-          <h3>❌ Fichier 2 — Déclinaisons ({{ erreursF2.length }} erreur(s))</h3>
-          <div v-for="(e, i) in erreursF2" :key="i" :class="['erreur-ligne', 'type-' + e.type]">
-            <span class="erreur-badge">{{ e.type }}</span>
-            {{ e.msg }}
-          </div>
-        </div>
-        <div v-else class="ok-bloc">✅ Fichier 2 — Déclinaisons : aucune erreur</div>
-
-        <!-- Erreurs F3 -->
-        <div v-if="erreursF3.length > 0" class="erreurs-bloc">
-          <h3>❌ Fichier 3 — Clients/Commandes ({{ erreursF3.length }} erreur(s))</h3>
-          <div v-for="(e, i) in erreursF3" :key="i" :class="['erreur-ligne', 'type-' + e.type]">
-            <span class="erreur-badge">{{ e.type }}</span>
-            {{ e.msg }}
-          </div>
-        </div>
-        <div v-else class="ok-bloc">✅ Fichier 3 — Clients/Commandes : aucune erreur</div>
-
-        <div class="actions">
-          <button class="btn-retour-step" @click="etape = 'selection'">
-            ← Rechoisir les fichiers
-          </button>
-          <button v-if="peutImporter" class="btn-importer" @click="lancerImport">
-            🚀 Lancer l'import
-          </button>
-          <p v-else class="msg-bloque">Corrigez les erreurs avant de pouvoir importer.</p>
-        </div>
-      </div>
-
-      <!-- ========== ÉTAPE 3 : IMPORT EN COURS ========== -->
-      <div v-if="etape === 'import'" class="contenu-carte">
-        <h2 class="sous-titre">🚀 Import en cours...</h2>
-        <div class="log-box">
-          <div v-for="(entry, i) in logImport" :key="i" :class="['log-ligne', 'log-' + entry.type]">
-            <span class="log-ts">{{ entry.ts }}</span>
-            {{ entry.msg }}
-          </div>
-          <div v-if="enCours" class="log-ligne log-info">⏳ Traitement...</div>
-        </div>
-      </div>
-
-      <!-- ========== ÉTAPE 4 : TERMINÉ ========== -->
-      <div v-if="etape === 'done'" class="contenu-carte">
-        <div class="done-header">
-          <span class="done-icone">✅</span>
-          <h2>Import terminé !</h2>
-        </div>
-
-        <div class="resume-grid">
-          <div class="resume-card">
-            <span class="r-nb">{{ resumeImport.produits }}</span>
-            <span class="r-label">produit(s) créé(s)</span>
-          </div>
-          <div class="resume-card">
-            <span class="r-nb">{{ resumeImport.declinaisons }}</span>
-            <span class="r-label">déclinaison(s) créée(s)</span>
-          </div>
-          <div class="resume-card">
-            <span class="r-nb">{{ resumeImport.clients }}</span>
-            <span class="r-label">client(s) créé(s)</span>
-          </div>
-          <div class="resume-card">
-            <span class="r-nb">{{ resumeImport.commandes }}</span>
-            <span class="r-label">commande(s) créée(s)</span>
-          </div>
-          <div class="resume-card">
-            <span class="r-nb">{{ resumeImport.images }}</span>
-            <span class="r-label">image(s) uploadée(s)</span>
-          </div>
-          <div :class="['resume-card', resumeImport.erreurs > 0 ? 'rouge' : '']">
-            <span class="r-nb">{{ resumeImport.erreurs }}</span>
-            <span class="r-label">erreur(s)</span>
-          </div>
-        </div>
-
-        <!-- Log complet pliable -->
-        <details class="log-details">
-          <summary>Voir le log complet ({{ logImport.length }} entrées)</summary>
-          <div class="log-box">
-            <div
-              v-for="(entry, i) in logImport"
-              :key="i"
-              :class="['log-ligne', 'log-' + entry.type]"
-            >
-              <span class="log-ts">{{ entry.ts }}</span>
-              {{ entry.msg }}
-            </div>
-          </div>
-        </details>
-
-        <div class="actions">
-          <button class="btn-retour-step" @click="reinitialiser">↺ Nouvel import</button>
-          <button class="btn-importer" @click="$router.push('/backoffice/dashboard')">
-            → Aller au dashboard
-          </button>
-        </div>
-      </div>
-
-      <!-- ========== PANNEAU RÉINITIALISATION ========== -->
-      <div v-if="resetVisible" class="reset-panneau">
+          <!-- ========== PANNEAU RÉINITIALISATION ========== -->
         <div class="reset-header">
           <span class="reset-icone">🗑️</span>
           <div>
-            <h2>Réinitialisation des données PrestaShop</h2>
+            <h2>Réinitialisation des stocks</h2>
             <p>Supprime toutes les commandes, clients et produits.</p>
           </div>
           <button class="btn-fermer-reset" @click="resetVisible = false">✕</button>
@@ -1460,22 +1333,55 @@ const lancerReset = async () => {
           </div>
         </div>
 
-        <div v-if="resetTermine" class="reset-done">
-          ✅ Réinitialisation terminée. PrestaShop est vide.
-          <button
-            class="btn-importer"
-            style="margin-top: 12px"
-            @click="
-              resetVisible = false
-              reinitialiser();
-            "
-          >
-            Fermer et recommencer un import
-          </button>
+        <!-- SECTION RETRAIT DE STOCK -->
+        <div class="removal-box" style="margin-top: 30px; border-top: 2px solid #eee; padding-top: 20px;">
+          <h3>📦 Retrait de stock par catégorie</h3>
+            <input v-model="categorieCible1" placeholder="Nom de la catégorie (ex: Akanjo)" class="form-control" />
+            <input v-model="quantiteARetirer1" type="number" placeholder="Qté à enlever" class="form-control" style="width: 120px;" />
+            <input v-model="maxsise1" type="number" placeholder="Max size" class="form-control" style="width: 120px;" />
+
+          <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+            <input v-model="categorieCible" placeholder="Nom de la catégorie (ex: Akanjo)" class="form-control" />
+            <input v-model="quantiteARetirer" type="number" placeholder="Qté à enlever" class="form-control" style="width: 120px;" />
+            <button class="btn-importer" @click="lancerGlobalStock" :disabled="enCoursRetrait">
+              {{ enCoursRetrait ? '⏳ Traitement...' : 'Appliquer les modifications' }}
+            </button>
+          </div>
+
+          <div v-if="logRetrait.length > 0" class="results-table">
+            <table style="width: 100%; border-collapse: collapse; background: #fdfdfd; border: 1px solid #ccc; font-size: 14px; color: #222;">
+              <thead>
+                <tr style="background: #e9ecef; color: #333;">
+                  <th style="padding: 10px; border: 1px solid #bbb; text-align: left;">Produit</th>
+                  <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">Mouvement (Réel)</th>
+                  <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">Évolution (Avant → Après)</th>
+                  <th style="padding: 10px; border: 1px solid #ddd; text-align: center;">Voulu</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(item, idx) in logRetrait" :key="idx">
+                  <td style="padding: 10px; border: 1px solid #ddd;">{{ item.nom }}</td>
+                  <td style="padding: 10px; border: 1px solid #ddd; text-align: center; font-weight: bold;" :style="{ color: item.type === 'ajout' ? '#2e7d32' : '#d32f2f' }">
+                    {{ item.type === 'ajout' ? '+' + item.reel1 : '-' + item.reel }}
+                  </td>
+                  <td style="padding: 10px; border: 1px solid #ddd; text-align: center; font-weight: bold;">{{ item.avant }} → {{ item.apres }}</td>
+                  <td style="padding: 10px; border: 1px solid #ddd; text-align: center; font-weight: bold;">
+                    {{ item.type === 'ajout' ? item.voulu1 : item.voulu }}
+                  </td>
+                </tr>
+              </tbody>
+              <tfoot style="font-weight: bold; background: #eee;">
+                <tr>
+                  <td style="padding: 10px; border: 1px solid #bbb;">VARIATION TOTALE</td>
+                  <td style="padding: 10px; border: 1px solid #ddd; text-align: center;">
+                    {{ logRetrait.reduce((sum, item) => sum + (item.reel1 || 0) - (item.reel || 0), 0) }}
+                  </td>
+                  <td colspan="2" style="border: 1px solid #ddd;"></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
         </div>
-      </div>
-    </main>
-  </div>
 </template>
 
 <style scoped src="@/assets/Back/ImportData.css"></style>

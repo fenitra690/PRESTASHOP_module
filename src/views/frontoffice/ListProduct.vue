@@ -8,6 +8,10 @@ const router = useRouter()
 const session = db.session('utilisateur', null)
 const panier = db.live('panier', [])
 
+const chequer = () => {
+  router.push('/frontoffice/login')
+}
+
 // --- DONNÉES ---
 const tousLesProduits = ref([])
 const tousLesStocks = ref([])
@@ -47,19 +51,19 @@ onMounted(async () => {
     if (rawCat) {
       const liste = Array.isArray(rawCat) ? rawCat : [rawCat]
       // Filtrer les catégories "racine" et "Accueil" (id 1 et 2)
-      categories.value = liste.filter((c) => c.id > 2)
+      categories.value = liste.filter((c) => Number(c.id) > 2)
     }
   }
 
   // 3. Récupération des vrais STOCKS
-  const resStock = await api.get('stock_availables?display=full');
+  const resStock = await api.get('stock_availables?display=full')
   if (resStock != null) {
-    let rawStock = resStock.stock_availables;
+    let rawStock = resStock.stock_availables
     if (rawStock != null) {
       if (Array.isArray(rawStock) == true) {
-        tousLesStocks.value = rawStock;
+        tousLesStocks.value = rawStock
       } else {
-        tousLesStocks.value = [rawStock];
+        tousLesStocks.value = [rawStock]
       }
     }
   }
@@ -100,41 +104,27 @@ const getDescription = (p) => {
 const getNomCategorie = (p) => {
   if (!p.id_category_default) return ''
   const cat = categories.value.find((c) => String(c.id) === String(p.id_category_default))
-  if (!cat) return ''
-  if (!cat.name) return ''
-  if (typeof cat.name === 'string') return cat.name
-  if (cat.name.language) {
-    const l = cat.name.language
-    return Array.isArray(l) ? l[0]?.value || l[0]?.['#text'] || '' : l?.value || l?.['#text'] || ''
-  }
-  return ''
+  return extraireNomCategorie(cat)
 }
 
-// Nouvelle fonction simplifiée pour extraire le vrai nom d'une catégorie
 function extraireNomCategorie(cat) {
   if (!cat) return ''
+  let n = cat.name
+  if (!n) return 'ID: ' + cat.id
 
-  // 1. Si le nom est directement une chaîne de texte
-  if (typeof cat.name === 'string') {
-    return cat.name
+  if (typeof n === 'string') return n
+
+  const chercherTexte = (obj) => {
+    if (!obj) return null
+    return obj.value || obj._ || obj['#text'] || obj.__cdata || null
   }
 
-  // 2. CAS DU JSON PRESTASHOP : Le nom est souvent un objet contenant "value" ou "#text"
-  if (cat.name && typeof cat.name === 'object') {
-    // Si PrestaShop a renvoyé une structure multi-langue avec .language
-    if (cat.name.language) {
-      const lang = cat.name.language
-      if (Array.isArray(lang)) {
-        return lang[0]?.value || lang[0]?.['#text'] || ''
-      }
-      return lang?.value || lang?.['#text'] || ''
-    }
-    
-    // Si c'est directement dans l'objet name
-    return cat.name.value || cat.name['#text'] || ''
+  if (n.language) {
+    const target = Array.isArray(n.language) ? n.language[0] : n.language
+    return chercherTexte(target) || 'ID: ' + cat.id
   }
 
-  return ''
+  return chercherTexte(n) || 'ID: ' + cat.id
 }
 
 const getImageUrl = (id, idImage) => {
@@ -144,30 +134,36 @@ const getImageUrl = (id, idImage) => {
 
 // CORRECTION IMAGES
 function getPremierImage(p) {
-  let idProduct = p.id;
-  let idImage = "";
+  let idProduct = p.id
+  let idImage = ''
 
   // 1. On regarde si PrestaShop nous donne directement l'ID de l'image par défaut
-  if (p.id_default_image != null && p.id_default_image != "") {
-    idImage = p.id_default_image;
-  } 
+  if (p.id_default_image != null && p.id_default_image != '') {
+    idImage = p.id_default_image
+  }
   // 2. Sinon, on fouille dans la liste des images du produit
-  else if (p.associations != null && p.associations.images != null && p.associations.images.image != null) {
-    let imgs = p.associations.images.image;
+  else if (
+    p.associations != null &&
+    p.associations.images != null &&
+    p.associations.images.image != null
+  ) {
+    let imgs = p.associations.images.image
     if (Array.isArray(imgs) == true) {
-      idImage = imgs[0].id;
+      idImage = imgs[0].id
     } else {
-      idImage = imgs.id;
+      idImage = imgs.id
     }
   }
 
   // 3. Si on n'a VRAIMENT pas trouvé d'image, on ne fait pas de requête (évite l'erreur 400)
-  if (idImage == "") {
-    return ""; 
+  if (idImage == '') {
+    return ''
   }
 
   // On retourne la bonne URL
-  return '/api/images/products/' + idProduct + '/' + idImage + '?ws_key=6CcZSeHI1MjkPrp1L9RGbKmoxNUEoMf7';
+  return (
+    '/api/images/products/' + idProduct + '/' + idImage + '?ws_key=6CcZSeHI1MjkPrp1L9RGbKmoxNUEoMf7'
+  )
 }
 
 const getPrix = (p) => parseFloat(p.price) || 0
@@ -320,27 +316,25 @@ const getNomAttr = (attr) => {
 // Stock du produit (quantity du produit principal)
 // CORRECTION STOCKS : On lit les vraies quantités de la table stock_availables
 function getStock(p) {
-  if (p == null) return 0;
-  
-  let totalStock = 0;
+  if (p == null) return 0
+
+  let totalStock = 0
 
   // On parcourt tous les stocks qu'on a téléchargés
   for (let i = 0; i < tousLesStocks.value.length; i++) {
-    let s = tousLesStocks.value[i];
-    
+    let s = tousLesStocks.value[i]
+
     // Si l'ID du produit correspond à l'ID du produit dans le stock
     if (String(s.id_product) == String(p.id)) {
-      
       // On ajoute la quantité (car un produit peut avoir plusieurs déclinaisons)
-      let qte = parseInt(s.quantity);
+      let qte = parseInt(s.quantity)
       if (isNaN(qte) == false) {
-        totalStock = totalStock + qte;
+        totalStock = totalStock + qte
       }
-      
     }
   }
 
-  return totalStock;
+  return totalStock
 }
 
 const decrementerQuantite = () => {
@@ -428,6 +422,8 @@ const nbPanier = computed(() => {
     <!-- ===== HERO ===== -->
     <div class="hero">
       <h1>Notre Collection</h1>
+      <a href="#" @click="chequer()">chequer allea</a>
+
       <p>Découvrez nos produits sélectionnés pour vous</p>
     </div>
 
@@ -441,9 +437,9 @@ const nbPanier = computed(() => {
         />
         <select v-model="categorieChoisie" class="select-cat">
           <option value="">Toutes les catégories</option>
-              <option v-for="cat in categories" :key="cat.id" :value="String(cat.id)">
-                {{ extraireNomCategorie(cat) || 'Catégorie n°' + cat.id }}
-              </option>
+          <option v-for="cat in categories" :key="cat.id" :value="String(cat.id)">
+            {{ extraireNomCategorie(cat) }}
+          </option>
         </select>
         <div class="prix-range">
           <input v-model="prixMin" type="number" placeholder="Prix min" class="input-prix" />

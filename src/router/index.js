@@ -15,6 +15,18 @@ function gardeAdmin(to, from, next) {
   }
 }
 
+function gardeAdmin2(to, from, next) {
+  // db.session retourne un ref, on lit .value via localStorage directement
+  const raw = sessionStorage.getItem('utilisateur_admin') || sessionStorage.getItem('admin')
+  // Vérification simple : si la clé session 'admin' existe
+  const session = JSON.parse(sessionStorage.getItem('admin') || 'null')
+  if (!session) {
+    next('/frontoffice/login')
+  } else {
+    next()
+  }
+}
+
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
@@ -58,6 +70,17 @@ const router = createRouter({
       path: '/frontoffice/Mescommandes',
       name: 'Mescommandes',
       component: () => import('../views/frontoffice/Mescommandes.vue'),
+    },
+    {
+      path: '/frontoffice/login',
+      name: '/frontoffice/login',
+      component: () => import('../views/frontoffice/Login.vue'),
+    },
+    {
+      path: '/frontoffice/Alea',
+      name: '/frontoffice/Alea',
+      component: () => import('../views/frontoffice/Alea.vue'),
+      beforeEnter: gardeAdmin2,
     },
 
      // ========================
